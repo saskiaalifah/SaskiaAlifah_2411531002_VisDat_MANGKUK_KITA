@@ -40,6 +40,9 @@ def load_data() -> dict[str, pd.DataFrame]:
     data["menu_cost"]["margin_pct"] = (data["menu_cost"]["harga_jual"] - data["menu_cost"]["food_cost"]) / data["menu_cost"]["harga_jual"] * 100
     items = data["order_items"].merge(data["menu_cost"], on="menu_id", how="left", validate="many_to_one")
     items = items.merge(data["orders"][["order_id", "branch_id", "channel", "tanggal", "tanggal_dt", "waktu_masuk"]], on="order_id", how="left", validate="many_to_one")
+    if "station_x" in items.columns:
+        items["station"] = items["station_x"].fillna(items["station_y"])
+        items = items.drop(columns=["station_x", "station_y"])
     items["revenue"] = items["qty"] * items["harga_satuan"]
     items["food_cost_total"] = items["qty"] * items["food_cost"]
     items["profit"] = items["revenue"] - items["food_cost_total"]
@@ -240,13 +243,24 @@ def render_insights(alerts):
     if not alerts:
         st.success("Tidak ada peringatan aktif untuk filter yang dipilih.")
         return
-    for icon, title, message, action in alerts:
-        severity = "critical" if icon == "🔴" else "caution" if icon == "🟠" else "notice"
-        st.markdown(
-            f"<div class='alert-card {severity}'><div><b>{icon} {title}</b></div>"
-            f"<div>{message}</div><small><b>Saran:</b> {action}</small></div>",
-            unsafe_allow_html=True,
-        )
+
+    priority = {"Stok Kritis": 0, "Kapasitas Hampir Penuh": 1, "Dapur Melambat": 2,
+                "Margin Menu Rendah": 3, "Limbah Bahan Tinggi": 4, "Okupansi Rendah": 5}
+    alerts = sorted(alerts, key=lambda item: priority.get(item[1], 99))
+
+    def render_rows(rows):
+        for icon, title, message, action in rows:
+            severity = "critical" if icon == "🔴" else "caution" if icon == "🟠" else "notice"
+            st.markdown(
+                f"<div class='alert-card {severity}'><div><b>{icon} {title}</b></div>"
+                f"<div>{message}</div><small><b>Saran:</b> {action}</small></div>",
+                unsafe_allow_html=True,
+            )
+
+    render_rows(alerts[:3])
+    if len(alerts) > 3:
+        with st.expander(f"Lihat {len(alerts) - 3} peringatan lainnya"):
+            render_rows(alerts[3:])
 
 
 def build_feedback_terms(comments):
@@ -275,7 +289,8 @@ def main():
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] p,
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] h2,
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] h3,
-    [data-testid='stSidebar'] label {{ color: #FFFDF9; }}
+    [data-testid='stSidebar'] label,
+    [data-testid='stSidebar'] [data-testid='stCaptionContainer'] * {{ color: #FFFDF9 !important; }}
     h1, h2 {{ color: {BRAND['primary_dark']}; }}
     .alert-card {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-left: 4px solid {BRAND['neutral']}; border-radius: 10px; padding: 10px 12px; margin: 0 0 8px 0; }}
     .alert-card.critical {{ border-left-color: {BRAND['danger']}; }}
@@ -284,6 +299,11 @@ def main():
     .alert-card small {{ color: #56615C; }}
     div[data-testid='stMetric'] {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; padding: 13px 15px; border-radius: 12px; min-height: 118px; }}
     div[data-testid='stMetricLabel'] p {{ font-size: .9rem; }}
+    div[data-testid='stMetricValue'] {{ font-size: 1.35rem; }}
+    @media (max-width: 1120px) {{
+      [data-testid='stHorizontalBlock'] {{ flex-wrap: wrap; }}
+      [data-testid='stHorizontalBlock'] > [data-testid='column'] {{ flex: 1 1 calc(50% - 1rem) !important; min-width: min(100%, 230px); }}
+    }}
     </style>""", unsafe_allow_html=True)
     try:
         data = load_data()
@@ -349,7 +369,7 @@ def main():
         with c: kpi_card("Limbah Bahan", f"{waste_pct:.1f}%", "Nilai bahan terbuang dibanding nilai pembelian selama 14 hari.")
         left, right = st.columns([1.7, 1], gap="large")
         with left:
-            st.subheader("V-01 · Pendapatan harian per cabang")
+            st.subheader("Pendapatan harian per cabang")
             st.caption("Bandingkan perubahan pendapatan dari hari ke hari. Arahkan kursor ke garis untuk melihat nilai.")
             trend = items.groupby(["tanggal", "branch_id"], as_index=False)["revenue"].sum()
             trend["cabang"] = trend.branch_id.map(branches)
@@ -358,17 +378,17 @@ def main():
             st.plotly_chart(chart_layout(fig), use_container_width=True)
         with right:
             st.subheader("Peringatan aktif")
-            st.caption("Saran operasional berdasarkan ambang yang ditetapkan pada proyek.")
+            st.caption("Tiga prioritas teratas ditampilkan; buka daftar untuk melihat sisanya.")
             render_insights(alerts)
         left, right = st.columns([1, 1], gap="large")
         with left:
-            st.subheader("V-11 · Lokasi dan pendapatan cabang")
+            st.subheader("Lokasi dan pendapatan cabang")
             st.caption("Ukuran lingkaran mengikuti pendapatan. Arahkan kursor ke titik untuk membandingkan cabang.")
             branch_revenue = items.groupby("branch_id", as_index=False)["revenue"].sum().merge(data["branches"], on="branch_id", how="right")
             branch_revenue["revenue"] = branch_revenue["revenue"].fillna(0)
             st.plotly_chart(create_branch_map(branch_revenue, 390), use_container_width=True)
         with right:
-            st.subheader("V-05 · Okupansi meja menurut jam")
+            st.subheader("Okupansi meja menurut jam")
             st.caption("Garis putus-putus menandai kapasitas tinggi (90%). Puncak membantu menentukan kebutuhan staf.")
             occ = occupancy.groupby("hour", as_index=False)["occupancy_rate_pct"].mean()
             fig = px.area(occ, x="hour", y="occupancy_rate_pct", labels={"hour":"Jam", "occupancy_rate_pct":"Meja terisi (%)"}, color_discrete_sequence=[BRAND["secondary"]])
@@ -379,13 +399,13 @@ def main():
     elif module == "Orders":
         left, right = st.columns(2)
         with left:
-            st.subheader("V-02 · Menu terlaris per kategori")
+            st.subheader("Menu terlaris per kategori")
             st.caption("Batang lebih panjang berarti jumlah unit terjual lebih banyak. Warna menunjukkan kategori menu.")
             top = items.groupby(["nama_menu", "kategori"], as_index=False)["qty"].sum().sort_values("qty").tail(18)
             fig = px.bar(top, x="qty", y="nama_menu", color="kategori", orientation="h", labels={"qty":"Unit terjual", "nama_menu":"Menu", "kategori":"Kategori"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
             st.plotly_chart(chart_layout(fig, 480), use_container_width=True)
         with right:
-            st.subheader("V-03 · Volume pesanan menurut jam dan hari")
+            st.subheader("Volume pesanan menurut jam dan hari")
             st.caption("Warna lebih pekat menunjukkan lebih banyak pesanan pada jam dan hari tersebut.")
             day_names = {"Monday": "Senin", "Tuesday": "Selasa", "Wednesday": "Rabu", "Thursday": "Kamis", "Friday": "Jumat", "Saturday": "Sabtu", "Sunday": "Minggu"}
             heat = orders.assign(hari=orders.waktu_masuk.dt.day_name().map(day_names)).pivot_table(index="hari", columns="jam", values="order_id", aggfunc="count", fill_value=0)
@@ -404,7 +424,7 @@ def main():
         st.dataframe(order_view, use_container_width=True, hide_index=True)
 
     elif module == "Tables":
-        st.subheader("V-05 · Okupansi meja menurut jam")
+        st.subheader("Okupansi meja menurut jam")
         st.caption("Garis membandingkan rata-rata meja terisi pada setiap cabang; garis putus-putus menandai 90% kapasitas.")
         occ = occupancy.groupby(["hour", "branch_id"], as_index=False)["occupancy_rate_pct"].mean()
         occ["cabang"] = occ.branch_id.map(branches)
@@ -423,20 +443,20 @@ def main():
     elif module == "Kitchen":
         left, right = st.columns(2)
         with left:
-            st.subheader("V-04a · Sebaran waktu persiapan per station")
+            st.subheader("Sebaran waktu persiapan per station")
             st.caption("Garis di tengah kotak = median; kotak merangkum setengah tengah pesanan. Makin rendah, makin cepat.")
             prep = items.sample(min(len(items), 8000), random_state=61143) if len(items) else items
             fig = px.box(prep, x="station", y="waktu_persiapan_menit", color="station", points=False, labels={"station":"Station", "waktu_persiapan_menit":"Menit"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
             st.plotly_chart(chart_layout(fig), use_container_width=True)
         with right:
-            st.subheader("V-04b · Persentase order terlambat per jam")
+            st.subheader("Persentase pesanan terlambat per jam")
             st.caption("Order dianggap terlambat bila persiapan lebih dari 20 menit. Garis menandai batas peringatan 15%.")
             hourly = orders.groupby("jam", as_index=False).agg(delayed=("durasi_persiapan_menit", lambda s: s.gt(20).mean() * 100))
             fig = px.bar(hourly, x="jam", y="delayed", labels={"jam":"Jam", "delayed":"Order terlambat (%)"}, color="delayed", color_continuous_scale=[BRAND["secondary"], BRAND["warning"], BRAND["danger"]])
             fig.add_hline(y=15, line_dash="dash", annotation_text="Alert 15%")
             fig.update_yaxes(ticksuffix="%")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
-        st.subheader("V-06 · Pesanan aktif dan waktu persiapan")
+        st.subheader("Pesanan aktif dan waktu persiapan")
         st.caption("Setiap titik adalah satu pesanan. Sebaran ke kanan-atas dapat menunjukkan dapur yang kewalahan.")
         scatter = orders.sample(min(len(orders), 3500), random_state=61143) if len(orders) else orders
         scatter["cabang"] = scatter.branch_id.map(branches)
@@ -446,7 +466,7 @@ def main():
             slope, intercept = np.polyfit(scatter["pesanan_aktif"], scatter["durasi_persiapan_menit"], 1)
             fig.add_trace(go.Scatter(x=xline, y=slope*xline+intercept, mode="lines", name="Tren", line=dict(color=BRAND["danger"], dash="dash")))
         st.plotly_chart(chart_layout(fig), use_container_width=True)
-        st.subheader("V-12 · Alur order dari masuk hingga pembayaran")
+        st.subheader("Alur pesanan dari masuk hingga pembayaran")
         st.caption("Lebar alur menunjukkan jumlah pesanan. Percabangan menunjukkan channel yang digunakan.")
         channel_counts = orders.channel.value_counts().to_dict()
         fig = go.Figure(go.Sankey(node=dict(label=["Order masuk", "Dapur", "Siap disajikan", "Dine-in", "Takeaway", "Delivery", "Pembayaran"], color=[BRAND["primary"], BRAND["secondary"], BRAND["success"], BRAND["warning"], BRAND["warning"], BRAND["warning"], BRAND["primary_dark"]], pad=18, thickness=20),
@@ -459,7 +479,7 @@ def main():
         inv["cabang"] = inv.branch_id.map(branches)
         left, right = st.columns(2)
         with left:
-            st.subheader("V-07a · Stok tersedia dibanding minimum")
+            st.subheader("Stok tersedia dibanding batas minimum")
             st.caption("Setiap pasangan batang membandingkan stok sekarang dengan batas minimum per bahan.")
             stock = inv.sort_values("stok_saat_ini").tail(25)
             long = stock.melt(id_vars=["nama_bahan", "cabang"], value_vars=["stok_saat_ini", "stok_minimum"], var_name="jenis", value_name="jumlah")
@@ -467,7 +487,7 @@ def main():
             fig = px.bar(long, x="nama_bahan", y="jumlah", color="jenis", barmode="group", facet_col="cabang", facet_col_wrap=1, labels={"nama_bahan":"Bahan", "jumlah":"Stok (unit bahan)", "jenis":"Jenis stok", "cabang":"Cabang"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"]])
             st.plotly_chart(chart_layout(fig, 500), use_container_width=True)
         with right:
-            st.subheader("V-07b · Nilai limbah bahan tertinggi")
+            st.subheader("Nilai limbah bahan tertinggi")
             st.caption("Menunjukkan nilai rupiah bahan terbuang selama periode data.")
             inv["waste_value"] = inv["total_terbuang"] * inv["harga_satuan"]
             waste = inv.sort_values("waste_value").tail(15)
@@ -484,13 +504,13 @@ def main():
         st.dataframe(inventory_view, use_container_width=True, hide_index=True)
 
     elif module == "Sales / Reports":
-        st.subheader("V-11 · Peta lokasi dan pendapatan cabang")
+        st.subheader("Peta lokasi dan pendapatan cabang")
         st.caption("Lingkaran lebih besar berarti pendapatan lebih tinggi; arahkan kursor ke titik untuk melihat nilainya.")
         branch_rev = items.groupby("branch_id", as_index=False)["revenue"].sum().merge(data["branches"], on="branch_id", how="right")
         branch_rev["revenue"] = branch_rev["revenue"].fillna(0)
         st.plotly_chart(create_branch_map(branch_rev, 500), use_container_width=True)
         st.caption("Koordinat memakai titik kota dari rancangan, bukan alamat gerai terverifikasi.")
-        st.subheader("V-10 · Topik yang sering disebut pelanggan")
+        st.subheader("Topik yang sering disebut pelanggan")
         st.caption("Batang menunjukkan berapa kali kata muncul di komentar yang lolos filter; ini membantu melihat tema ulasan, bukan sentimen otomatis.")
         comments = data["feedback_joined"]
         comments = comments[comments.order_id.isin(orders.order_id)]
@@ -512,13 +532,13 @@ def main():
         menu["margin_pct"] = (menu.revenue - menu.food_cost_total) / menu.revenue.replace(0, np.nan) * 100
         left, right = st.columns(2)
         with left:
-            st.subheader("V-08 · Harga jual dan margin menu")
+            st.subheader("Harga jual dan margin menu")
             st.caption("Setiap titik = satu menu. Garis 25% menandai margin bahan rendah; titik besar menunjukkan menu lebih laris.")
             fig = px.scatter(menu, x="harga_satuan", y="margin_pct", size="units", color="kategori", hover_name="nama_menu", labels={"harga_satuan":"Harga jual (Rp)", "margin_pct":"Margin menu (%)", "units":"Unit terjual", "kategori":"Kategori"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
             fig.add_hline(y=25, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang margin 25%")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
         with right:
-            st.subheader("V-09 · Profit per cabang dan kategori")
+            st.subheader("Profit bahan per cabang dan kategori")
             st.caption("Bandingkan sisa pendapatan setelah biaya bahan; biaya lain seperti gaji dan sewa belum dikurangi.")
             profit = items.groupby(["branch_id", "kategori"], as_index=False)["profit"].sum()
             profit["cabang"] = profit.branch_id.map(branches)
