@@ -1,0 +1,8 @@
+﻿tabel,baris_sebelum,baris_sesudah,duplikat_dihapus,baris_dihapus,nilai_kosong_sebelum,nilai_kosong_sesudah,nilai_diimputasi,nilai_diperbaiki
+branches,3,3,0,0,0,0,0,0
+tables,68,68,0,0,0,0,0,0
+menu_cost,20,20,0,0,0,0,0,32
+orders,9012,9000,12,0,5048,5028,18,48
+order_items,29576,29536,40,0,0,0,9,9
+inventory,45,45,0,0,0,0,0,0
+feedback,400,400,0,0,18,18,0,0

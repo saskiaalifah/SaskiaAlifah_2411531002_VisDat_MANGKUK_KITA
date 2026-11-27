@@ -1,0 +1,23 @@
+{
+  "period_start": "2026-11-02 08:00:00",
+  "period_end": "2026-11-15 21:59:00",
+  "total_revenue_idr": 1044746000,
+  "total_orders": 9000,
+  "average_preparation_minutes": 15.34,
+  "delayed_orders_over_20m_pct": 8.91,
+  "average_occupancy_pct": 61.46,
+  "peak_hourly_occupancy_pct": 100.0,
+  "food_cost_margin_pct": 37.22,
+  "food_waste_pct_of_purchases_by_value": 13.23,
+  "food_waste_value_idr": 25385246.64,
+  "definitions": {
+    "delayed_order": "durasi_persiapan_menit > 20 menit",
+    "occupancy": "meja-menit terisi / meja-menit tersedia; jam operasional 08.00–22.00",
+    "food_cost_margin": "(revenue - food cost menu) / revenue; belum memasukkan biaya tenaga kerja/sewa/overhead",
+    "food_waste": "nilai bahan terbuang / nilai total pembelian bahan"
+  },
+  "data_limitations": [
+    "Seluruh order, jadwal duduk, rating, dan komentar adalah simulasi sintetis, bukan pengukuran cabang nyata.",
+    "Okupansi dihitung dari menit meja yang dijadwalkan; 100% menandakan meja penuh. Waktu tunggu meja disimpan terpisah untuk menunjukkan permintaan yang melebihi ketersediaan langsung."
+  ]
+}

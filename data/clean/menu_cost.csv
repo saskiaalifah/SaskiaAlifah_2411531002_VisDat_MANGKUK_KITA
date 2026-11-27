@@ -1,0 +1,21 @@
+﻿menu_id,nama_menu,kategori,station,harga_jual,food_cost
+M01,Ayam Sambal Matah,Rice Bowl,Grill,32000,24960
+M02,Beef Teriyaki Bowl,Rice Bowl,Grill,42000,33180
+M03,Ayam Geprek Bowl,Rice Bowl,Wok,30000,23100
+M04,Chicken Katsu Bowl,Rice Bowl,Grill,35000,26600
+M05,Dori Sambal Ijo,Rice Bowl,Wok,36000,20880
+M06,Bowl Jamur Crispy,Rice Bowl,Wok,28000,15120
+M07,Beef Rendang Bowl,Rice Bowl,Wok,44000,27280
+M08,Tuna Sambal Bowl,Rice Bowl,Grill,38000,21660
+M09,Kopi Susu Kita,Kopi,Bar,22000,15840
+M10,Americano,Kopi,Bar,18000,6120
+M11,Cafe Latte,Kopi,Bar,25000,13750
+M12,Caramel Latte,Kopi,Bar,28000,16520
+M13,Es Kopi Gula Aren,Kopi,Bar,24000,13440
+M14,Matcha Latte,Non-Kopi,Bar,27000,15390
+M15,Thai Tea,Non-Kopi,Bar,22000,10560
+M16,Lemon Tea,Non-Kopi,Bar,18000,5580
+M17,Cokelat Dingin,Non-Kopi,Bar,24000,12480
+M18,Kentang Goreng,Snack,Wok,20000,9000
+M19,Pisang Cokelat,Snack,Wok,18000,7740
+M20,Salad Buah,Snack,Cold,22000,13420

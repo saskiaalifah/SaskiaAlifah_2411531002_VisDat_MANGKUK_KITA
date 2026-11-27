@@ -1,0 +1,43 @@
+{
+  "periode_mulai": "2026-11-02 08:00:00",
+  "periode_akhir": "2026-11-15 21:59:00",
+  "jumlah_hari": 14,
+  "baris_bersih": {
+    "branches": 3,
+    "tables": 68,
+    "menu_cost": 20,
+    "orders": 9000,
+    "order_items": 29536,
+    "inventory": 45,
+    "feedback": 400
+  },
+  "order_unik": 9000,
+  "nilai_kosong_bersih": {
+    "branches": 0,
+    "tables": 0,
+    "menu_cost": 0,
+    "orders": 5028,
+    "order_items": 0,
+    "inventory": 0,
+    "feedback": 18
+  },
+  "relasi": {
+    "tables_branch_orphan": 0,
+    "orders_branch_orphan": 0,
+    "orders_table_orphan": 0,
+    "items_order_orphan": 0,
+    "items_menu_orphan": 0,
+    "feedback_order_orphan": 0,
+    "inventory_branch_orphan": 0
+  },
+  "indikator_sintetis": {
+    "pesanan_terlambat_di_atas_20_menit_persen": 8.91,
+    "jumlah_menu_margin_di_bawah_25_persen": 4,
+    "jumlah_bahan_di_bawah_stok_minimum": 3
+  },
+  "catatan": [
+    "Data sepenuhnya sintetis, bukan transaksi bisnis nyata.",
+    "Rating kosong dipertahankan karena nilai subjektif tidak boleh ditebak.",
+    "Koordinat cabang adalah titik tengah kota dari rancangan awal; ganti untuk peta final."
+  ]
+}
