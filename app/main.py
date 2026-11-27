@@ -1,6 +1,7 @@
 """Interactive seven-module restaurant dashboard for Mangkuk Kita."""
 from __future__ import annotations
 
+import base64
 import re
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,12 @@ ASSETS = ROOT / "assets"
 BRAND = {"primary": "#C65D3B", "primary_dark": "#9E4125", "secondary": "#2F5D50",
          "success": "#3A9D5D", "warning": "#F2A541", "danger": "#D64545",
          "neutral": "#5F6368", "bg": "#F6EBDD", "surface": "#FFFDF9"}
+COLOR_CABANG = {"Mangkuk Kita Padang": "#C65D3B", "Mangkuk Kita Bukittinggi": "#2F5D50", "Mangkuk Kita Pekanbaru": "#D99527"}
+ORDER_CABANG = list(COLOR_CABANG)
+COLOR_KATEGORI = {"Rice Bowl": "#2F5D50", "Kopi": "#C65D3B", "Non-Kopi": "#D99527", "Snack": "#718A76"}
+ORDER_KATEGORI = list(COLOR_KATEGORI)
+COLOR_CHANNEL = {"Dine-in": "#2F5D50", "Takeaway": "#D99527", "Delivery": "#C65D3B"}
+ORDER_STATION = {"Grill": "Panggang", "Wok": "Wok", "Cold": "Dingin", "Bar": "Bar"}
 CHART_TEMPLATE = "plotly_white"
 STOPWORDS = set("dan yang di ke dari untuk dengan ini itu ada adalah atau tapi tetapi saya kami aku nya the a an of to in is it this that sangat cukup akan juga pada saat agar karena jadi".split())
 
@@ -62,37 +69,159 @@ def rupiah_compact(value: float) -> str:
     if abs(value) >= 1_000_000_000:
         return f"Rp{value / 1_000_000_000:,.2f} miliar".replace(",", "X").replace(".", ",").replace("X", ".")
     if abs(value) >= 1_000_000:
-        return f"Rp{value / 1_000_000:,.1f} juta".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"Rp{value / 1_000_000:,.1f} jt".replace(",", "X").replace(".", ",").replace("X", ".")
     return rupiah(value)
 
 
 def chart_layout(fig, height=360, **kwargs):
-    fig.update_layout(template=CHART_TEMPLATE, height=height, margin=dict(l=18, r=18, t=50, b=18),
-                      font=dict(family="Inter, Arial, sans-serif", color="#31413D", size=12),
-                      paper_bgcolor=BRAND["surface"], plot_bgcolor=BRAND["surface"], **kwargs)
+    options = dict(template=CHART_TEMPLATE, height=height, margin=dict(l=18, r=18, t=50, b=18),
+                   font=dict(family="Inter, Arial, sans-serif", color="#31413D", size=13),
+                   paper_bgcolor=BRAND["surface"], plot_bgcolor=BRAND["surface"])
+    options.update(kwargs)
+    fig.update_layout(**options)
     fig.update_xaxes(showgrid=False, zeroline=False)
     fig.update_yaxes(gridcolor="#E8E0D6", zeroline=False)
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1].replace("Mangkuk Kita ", "")))
+    return fig
+
+
+def angka_id(value, decimals=0):
+    return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def short_branch(name):
+    return str(name).replace("Mangkuk Kita ", "")
+
+
+def tanggal_id(value, year=False):
+    stamp = pd.Timestamp(value)
+    months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+    return f"{stamp.day} {months[stamp.month - 1]}{f' {stamp.year}' if year else ''}"
+
+
+def rentang_jam(hours):
+    vals = sorted(set(int(hour) for hour in hours))
+    ranges = []
+    start = previous = vals[0]
+    for hour in vals[1:]:
+        if hour != previous + 1:
+            ranges.append(f"{start:02d}–{previous:02d}" if start != previous else f"{start:02d}")
+            start = hour
+        previous = hour
+    ranges.append(f"{start:02d}–{previous:02d}" if start != previous else f"{start:02d}")
+    return ", ".join(ranges)
+
+
+def money_axis(fig, axis="y"):
+    """Show monetary chart axes in millions of rupiah, with Indonesian units."""
+    fn = fig.update_yaxes if axis == "y" else fig.update_xaxes
+    fn(tickformat=",.0f", ticksuffix=" jt", title_text="Pendapatan (juta Rp)" if axis == "y" else "Nilai (juta Rp)")
     return fig
 
 
 def create_branch_map(branch_revenue: pd.DataFrame, height=440):
-    if branch_revenue.empty:
+    """Offline schematic map: uses only local vector traces, never external map tiles."""
+    map_data = branch_revenue.dropna(subset=["latitude", "longitude"]).copy()
+    fig = go.Figure()
+    # A restrained local outline of Sumatra's western coast keeps the map visible offline.
+    coastline_x = [99.02, 99.15, 99.28, 99.42, 99.50, 99.46, 99.55, 99.70, 99.82, 100.02, 100.25, 100.55, 100.92, 101.28, 101.66, 101.92, 101.96, 101.78, 101.35, 100.92, 100.48, 100.08, 99.72, 99.40, 99.16, 99.02]
+    coastline_y = [-1.48, -1.24, -.92, -.62, -.28, .06, .38, .69, 1.03, 1.30, 1.48, 1.63, 1.78, 1.90, 1.99, 2.07, -1.48, -1.48, -1.48, -1.48, -1.48, -1.48, -1.48, -1.48, -1.48, -1.48]
+    fig.add_trace(go.Scatter(x=coastline_x, y=coastline_y, mode="lines", fill="toself", fillcolor="#E6E9D9",
+        line=dict(color="#CCD2C1", width=1.3), hoverinfo="skip", showlegend=False, name="Daratan"))
+    if map_data.empty:
+        fig.add_annotation(text="Koordinat cabang belum tersedia", showarrow=False, x=100.5, y=0)
+        fig.update_xaxes(range=[98.9, 102.0], title="Bujur (°BT)", dtick=.5, ticksuffix="°")
+        fig.update_yaxes(range=[-1.55, 1.65], title="Lintang (°)", dtick=.5, ticksuffix="°", scaleanchor="x", scaleratio=1)
+        return chart_layout(fig, height, margin=dict(l=25, r=20, t=16, b=38), showlegend=False)
+    map_data["label_cabang"] = map_data["nama"].map(short_branch)
+    map_data["pendapatan_tampilan"] = map_data["revenue"].map(rupiah)
+    max_revenue = max(float(map_data["revenue"].max()), 1)
+    for row in map_data.itertuples(index=False):
+        color = COLOR_CABANG.get(row.nama, BRAND["primary"])
+        size = 19 + 23 * np.sqrt(max(float(row.revenue), 0) / max_revenue)
+        fig.add_trace(go.Scatter(x=[row.longitude], y=[row.latitude], mode="markers+text", name=short_branch(row.nama),
+            text=[row.kota], textposition="top center", textfont=dict(size=12, color="#244C43", family="Inter, Arial, sans-serif"),
+            marker=dict(size=size, color=color, line=dict(color="#FFFDF9", width=3), opacity=.96),
+            customdata=[[row.pendapatan_tampilan]],
+            hovertemplate="<b>%{text}</b><br>Pendapatan: %{customdata[0]}<br>Koordinat: %{x:.3f}° BT, %{y:.3f}°<extra></extra>"))
+    fig.add_annotation(x=99.35, y=-.05, text="SAMUDRA HINDIA", showarrow=False, textangle=-70,
+                       font=dict(size=10, color="#82999C", family="Inter, Arial, sans-serif"))
+    fig.add_annotation(x=101.65, y=1.05, text="RIAU", showarrow=False,
+                       font=dict(size=10, color="#718A76", family="Inter, Arial, sans-serif"))
+    fig.update_xaxes(range=[98.95, 102.02], title="Bujur (°BT)", dtick=.5, ticksuffix="°", gridcolor="#DAE2DE", zeroline=False)
+    fig.update_yaxes(range=[-1.55, 1.7], title="Lintang (°)", dtick=.5, ticksuffix="°", gridcolor="#DAE2DE", zeroline=False, scaleanchor="x", scaleratio=1)
+    fig.update_layout(showlegend=False, plot_bgcolor="#EAF2F0", paper_bgcolor=BRAND["surface"])
+    fig = chart_layout(fig, height, margin=dict(l=42, r=16, t=18, b=42), showlegend=False)
+    fig.update_xaxes(showgrid=True, gridcolor="#DAE2DE")
+    fig.update_yaxes(showgrid=True, gridcolor="#DAE2DE")
+    return fig
+
+
+def create_table_plan(tables: pd.DataFrame, selected_orders: pd.DataFrame, height=480):
+    """Schematic table layout; table positions are generated for visualization only."""
+    if tables.empty:
         fig = go.Figure()
-        fig.add_annotation(text="Tidak ada pendapatan pada filter ini", showarrow=False, x=.5, y=.5)
+        fig.add_annotation(text="Data meja tidak tersedia untuk cabang ini", showarrow=False, x=.5, y=.5)
         return chart_layout(fig, height)
-    fig = px.scatter_geo(branch_revenue, lat="latitude", lon="longitude", size="revenue", color="kota",
-                         hover_name="nama", hover_data={"revenue": ":,.0f", "latitude": False, "longitude": False},
-                         projection="mercator", scope="asia", size_max=48,
-                         color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"]],
-                         labels={"revenue": "Pendapatan (Rp)"})
-    fig.update_geos(showland=True, landcolor="#F3EBDD", showcountries=True, countrycolor="#D4C8B7",
-                    showocean=True, oceancolor="#EAF2F0", showcoastlines=True, coastlinecolor="#B7C5C1",
-                    lonaxis_range=[98, 104], lataxis_range=[-2.5, 2.5], center={"lon": 100.7, "lat": 0}, projection_scale=4.2)
-    return chart_layout(fig, height)
+
+    table_data = tables.sort_values("table_id").copy().reset_index(drop=True)
+    visits = selected_orders.loc[
+        selected_orders.channel.eq("Dine-in") & selected_orders.table_id.notna()
+    ].groupby("table_id").size()
+    table_data["kunjungan"] = table_data.table_id.map(visits).fillna(0).astype(int)
+    positive = table_data.loc[table_data.kunjungan.gt(0), "kunjungan"]
+    low_cut = float(positive.quantile(.33)) if len(positive) else 0
+    high_cut = float(positive.quantile(.67)) if len(positive) else 0
+    table_data["kelompok"] = np.select(
+        [table_data.kunjungan.eq(0), table_data.kunjungan.le(low_cut), table_data.kunjungan.le(high_cut)],
+        ["0 pesanan dine-in", "Frekuensi rendah", "Frekuensi sedang"],
+        default="Frekuensi tinggi",
+    )
+
+    columns = [.58, 1.48, 2.38, 4.05, 4.95, 5.85, 6.75]
+    rows = []
+    for index in range(len(table_data)):
+        row, col = divmod(index, len(columns))
+        y = row * 1.08
+        rows.append((columns[col], y))
+    table_data["x"] = [point[0] for point in rows]
+    table_data["y"] = [point[1] for point in rows]
+
+    palette = {"0 pesanan dine-in": "#D8D4CE", "Frekuensi rendah": "#D99527",
+               "Frekuensi sedang": "#789384", "Frekuensi tinggi": "#2F5D50"}
+    fig = go.Figure()
+    for label in palette:
+        part = table_data[table_data.kelompok.eq(label)]
+        if part.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=part.x, y=part.y, mode="markers+text", name=label,
+            text=part.table_id.str[-3:], textposition="middle center",
+            textfont=dict(size=10, color="#FFFDF9" if label != "0 pesanan dine-in" else "#31413D"),
+            marker=dict(symbol="square", size=39, color=palette[label],
+                        line=dict(color="#FFFDF9", width=2)),
+            customdata=np.column_stack([part.table_id, part.kapasitas, part.kunjungan]),
+            hovertemplate="Meja %{customdata[0]}<br>Kapasitas: %{customdata[1]} orang<br>Pesanan dine-in pada periode: %{customdata[2]}<extra></extra>"))
+
+    max_y = float(table_data.y.max()) if len(table_data) else 1
+    fig.add_shape(type="rect", x0=.12, y0=-.62, x1=7.18, y1=max_y + 1.38,
+                  line=dict(color="#CFC4B6", width=2), fillcolor="#FAF7F1", layer="below")
+    fig.add_shape(type="rect", x0=3.18, y0=-.58, x1=3.78, y1=max_y + 1.32,
+                  line=dict(width=0), fillcolor="#EEE9DF", layer="below")
+    fig.add_annotation(x=1.48, y=max_y + .92, text="AREA A · 3 KOLOM MEJA", showarrow=False,
+                       font=dict(size=11, color="#6A6258"), bgcolor="#F3EBDD", borderpad=4)
+    fig.add_annotation(x=5.42, y=max_y + .92, text="AREA B · 4 KOLOM MEJA", showarrow=False,
+                       font=dict(size=11, color="#6A6258"), bgcolor="#F3EBDD", borderpad=4)
+    fig.add_annotation(x=3.48, y=max_y / 2, text="JALUR", textangle=-90,
+                       showarrow=False, font=dict(size=9, color="#776E63"))
+    fig.update_xaxes(visible=False, range=[-.12, 7.42], fixedrange=True)
+    fig.update_yaxes(visible=False, range=[max_y + 1.62, -.88], fixedrange=True)
+    return chart_layout(fig, height, margin=dict(l=10, r=10, t=18, b=58),
+                        legend=dict(title="Pesanan dine-in", orientation="h", y=-.16, x=0))
 
 
-def kpi_card(label, value, help_text=None):
-    st.metric(label, value, help=help_text)
+def kpi_card(label, value, help_text=None, delta=None):
+    st.metric(label, value, delta=delta, help=help_text)
 
 
 def get_filters(data, module):
@@ -111,52 +240,38 @@ def get_filters(data, module):
         st.session_state["filter_channel"] = "Semua channel"
 
     with st.container(border=True):
-        title, reset = st.columns([4, 1])
-        with title:
-            st.markdown("#### Atur tampilan data")
-            st.caption("Pilih filter; grafik dan angka akan langsung menyesuaikan. Gunakan ‘Semua’ untuk gabungan data.")
-        with reset:
-            st.write("")
-            st.button("Reset filter", key="reset_filters", on_click=reset_filters, use_container_width=True)
-        if module == "Inventory":
-            branch_col = st.container()
-            date_col = category_col = channel_col = None
-        else:
-            branch_col, date_col, category_col, channel_col = st.columns([1, 1.25, 1, 1], gap="small")
+        kicker_col, branch_col, date_col, category_col, channel_col, reset_col = st.columns([.72, 1.15, 1.55, 1.08, 1.08, .62], gap="small", vertical_alignment="bottom")
+        with kicker_col:
+            st.markdown("<div class='filter-kicker'>FILTER<br>DATA</div>", unsafe_allow_html=True)
         with branch_col:
             branch_value = st.selectbox("Cabang", ["Semua cabang"] + branch_ids, key="filter_branch",
-                                         format_func=lambda x: "Semua cabang" if x == "Semua cabang" else branch_names.get(x, x),
-                                         help="Pilih satu cabang atau lihat semuanya.")
+                                         format_func=lambda x: "Semua cabang" if x == "Semua cabang" else branch_names.get(x, x))
         selected_branches = branch_ids if branch_value == "Semua cabang" else [branch_value]
         selected_category, selected_channel = "Semua kategori", "Semua channel"
         selected_categories, selected_channels = categories, channels
         date_value = (min_date, max_date)
         if module == "Inventory":
-            st.caption("Modul Stok menampilkan ringkasan periode 14 hari. Hanya filter cabang yang berlaku.")
+            with date_col: st.text_input("Periode", "Ringkasan tetap · 14 hari", disabled=True, key="inventory_period_display")
+            with category_col: st.text_input("Kategori", "Tidak berlaku", disabled=True, key="inventory_category_display")
+            with channel_col: st.text_input("Channel", "Tidak berlaku", disabled=True, key="inventory_channel_display")
         else:
             with date_col:
-                date_value = st.date_input("Periode", value=(min_date, max_date), min_value=min_date,
-                                            max_value=max_date, key="filter_dates", help="Pilih tanggal mulai dan tanggal akhir.")
+                date_value = st.date_input("Tanggal", value=(min_date, max_date), min_value=min_date,
+                                            max_value=max_date, key="filter_dates")
             with category_col:
                 selected_category = st.selectbox("Kategori menu", ["Semua kategori"] + categories,
-                                                 key="filter_category", help="Pilih satu kategori atau tampilkan semua.")
+                                                 key="filter_category")
                 selected_categories = categories if selected_category == "Semua kategori" else [selected_category]
             with channel_col:
                 selected_channel = st.selectbox("Channel pesanan", ["Semua channel"] + channels,
-                                                key="filter_channel", help="Pilih satu channel atau tampilkan semua.")
+                                                key="filter_channel")
                 selected_channels = channels if selected_channel == "Semua channel" else [selected_channel]
         if isinstance(date_value, tuple):
             start_date, end_date = date_value if len(date_value) == 2 else (date_value[0], date_value[0])
         else:
             start_date = end_date = date_value
-        days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days + 1
-        branch_label = "Semua cabang" if branch_value == "Semua cabang" else branch_names[branch_value]
-        category_label = selected_category
-        channel_label = selected_channel
-        if module != "Inventory":
-            st.caption(f"Filter aktif: {branch_label} · {category_label} · {channel_label} · {days} hari")
-        else:
-            st.caption(f"Filter aktif: {branch_label}")
+        with reset_col:
+            st.button("Reset", key="reset_filters", on_click=reset_filters, use_container_width=True)
     return {"start": pd.Timestamp(start_date), "end": pd.Timestamp(end_date), "branches": selected_branches,
             "categories": selected_categories, "channels": selected_channels}
 
@@ -226,7 +341,7 @@ def insights(data, orders, items, occupancy, selected_branches):
     waste = waste[waste["branch_id"].isin(selected_branches)]
     high_waste = waste[waste["waste_rate_pct"] > 8]
     if len(high_waste):
-        alerts.append(("🟠", "Limbah Bahan Tinggi", f"{len(high_waste)} bahan memiliki limbah di atas 8% dari nilai pembelian.", "Sesuaikan jumlah pembelian dan persiapan harian."))
+        alerts.append(("🟠", "Limbah Bahan Tinggi", f"{len(high_waste)} bahan memiliki limbah di atas ambang proyek 8% dari nilai pembelian.", "Sesuaikan jumlah pembelian dan persiapan harian."))
     if len(occupancy):
         hourly = occupancy.groupby(["branch_id", "hour"])["occupancy_rate_pct"].mean()
         low_hours = hourly[hourly < 30]
@@ -234,8 +349,12 @@ def insights(data, orders, items, occupancy, selected_branches):
             alerts.append(("🟡", "Okupansi Rendah", f"Okupansi di bawah 30% pada {len(low_hours)} kombinasi cabang dan jam.", "Uji promo terbatas pada jam sepi."))
         busy_hours = hourly[hourly > 90]
         if len(busy_hours):
-            places = [f"{branch} jam {hour:02d}" for branch, hour in busy_hours.index.tolist()]
-            alerts.append(("🔴", "Kapasitas Hampir Penuh", f"Okupansi di atas 90% pada {', '.join(places[:5])}.", "Aktifkan reservasi dan siapkan alur antrean."))
+            branch_names = data["branches"].set_index("branch_id")["nama"].to_dict()
+            by_branch = {}
+            for branch, hour in busy_hours.index.tolist():
+                by_branch.setdefault(short_branch(branch_names.get(branch, branch)), []).append(int(hour))
+            places = [f"{name}, jam {rentang_jam(hours)}" for name, hours in by_branch.items()]
+            alerts.append(("🔴", "Kapasitas Hampir Penuh", f"Okupansi di atas 90% pada {'; '.join(places[:5])}.", "Aktifkan reservasi dan siapkan alur antrean."))
     return alerts
 
 
@@ -250,160 +369,301 @@ def render_insights(alerts):
 
     def render_rows(rows):
         for icon, title, message, action in rows:
-            severity = "critical" if icon == "🔴" else "caution" if icon == "🟠" else "notice"
+            severity, level = ("critical", "Kritis") if icon == "🔴" else ("caution", "Perhatian") if icon == "🟠" else ("notice", "Pantauan")
             st.markdown(
-                f"<div class='alert-card {severity}'><div><b>{icon} {title}</b></div>"
-                f"<div>{message}</div><small><b>Saran:</b> {action}</small></div>",
+                f"<div class='alert-card {severity}'><div class='alert-title'><b>{icon} {level} · {title}</b></div>"
+                f"<div class='alert-message'>{message}</div><small><b>Saran:</b> {action}</small></div>",
                 unsafe_allow_html=True,
             )
 
-    render_rows(alerts[:3])
-    if len(alerts) > 3:
-        with st.expander(f"Lihat {len(alerts) - 3} peringatan lainnya"):
-            render_rows(alerts[3:])
+    columns = st.columns(3, gap="small")
+    for index, alert in enumerate(alerts):
+        with columns[index % 3]:
+            render_rows([alert])
 
 
-def build_feedback_terms(comments):
-    tokens = []
-    for comment in comments.dropna().astype(str):
-        tokens.extend(w for w in re.findall(r"[a-zA-ZÀ-ÿ]+", comment.lower()) if len(w) > 2 and w not in STOPWORDS)
-    counts = Counter(tokens).most_common(12)
-    if not counts:
+def normalize_word(word):
+    word = word.lower()
+    for suffix in ("nya", "lah", "kah", "pun", "an", "kan"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            word = word[:-len(suffix)]
+            break
+    return {"enakkk": "enak", "mantapp": "mantap", "porsii": "porsi"}.get(word, word)
+
+
+def build_feedback_terms(feedback):
+    word_ratings = {}
+    if not feedback.empty:
+        for row in feedback.dropna(subset=["komentar"]).itertuples(index=False):
+            words = [normalize_word(w) for w in re.findall(r"[a-zA-ZÀ-ÿ]+", str(row.komentar).lower())]
+            # Count each normalized word only once per review.
+            for word in set(words):
+                if len(word) > 2 and word not in STOPWORDS:
+                    word_ratings.setdefault(word, []).append(float(row.rating))
+    if not word_ratings:
         fig = go.Figure()
         fig.add_annotation(text="Belum ada ulasan", showarrow=False, x=.5, y=.5)
         return chart_layout(fig, 370)
-    terms = pd.DataFrame(counts, columns=["kata", "jumlah"]).sort_values("jumlah", ascending=True)
-    fig = px.bar(terms, x="jumlah", y="kata", orientation="h", text="jumlah",
-                 labels={"kata": "Kata dalam ulasan", "jumlah": "Jumlah penyebutan"},
-                 color_discrete_sequence=[BRAND["secondary"]])
-    fig.update_traces(textposition="outside", cliponaxis=False, hovertemplate="%{y}: %{x} penyebutan<extra></extra>")
-    fig.update_xaxes(rangemode="tozero", title="Jumlah penyebutan")
-    return chart_layout(fig, 370, showlegend=False)
+    terms = pd.DataFrame([{"kata": word, "jumlah": len(ratings), "rating": np.mean(ratings)} for word, ratings in word_ratings.items()])
+    terms = terms.sort_values("jumlah", ascending=False).head(24).reset_index(drop=True)
+    terms["warna"] = np.where(terms.rating >= 4.1, "Positif", np.where(terms.rating <= 3.4, "Perlu perhatian", "Netral"))
+    palette = {"Positif": "#2F5D50", "Perlu perhatian": "#B74736", "Netral": "#80644B"}
+    # Center each row and account for approximate text width to keep words readable without collisions.
+    max_count = max(terms.jumlah.max(), 1)
+    sizes = 17 + 31 * np.sqrt(terms.jumlah / max_count)
+    widths = [max(.09, len(word) * size * .00092) for word, size in zip(terms.kata, sizes)]
+    rows, row, used = [], [], 0.0
+    for i, width in enumerate(widths):
+        addition = width + (.025 if row else 0)
+        if row and used + addition > .86:
+            rows.append(row); row, used = [], 0.0; addition = width
+        row.append(i); used += addition
+    if row: rows.append(row)
+    # Limit vertical density for small screens by keeping the most frequent words.
+    if len(rows) > 5:
+        keep = [i for r in rows[:5] for i in r]
+        terms, sizes, widths = terms.iloc[keep].copy().reset_index(drop=True), sizes[keep], [widths[i] for i in keep]
+        rows, row, used = [], [], 0.0
+        for i, width in enumerate(widths):
+            if row and used + width + .025 > .86:
+                rows.append(row); row, used = [], 0.0
+            row.append(i); used += width + (.025 if len(row) > 1 else 0)
+        if row: rows.append(row)
+    xs = [0.0] * len(terms); ys = [0.0] * len(terms)
+    row_step = .76 / max(len(rows) - 1, 1)
+    for r_index, row_ids in enumerate(rows):
+        total_width = sum(widths[i] for i in row_ids) + .025 * (len(row_ids) - 1)
+        cursor = .5 - total_width / 2
+        for i in row_ids:
+            xs[i] = cursor + widths[i] / 2
+            ys[i] = .88 - r_index * row_step
+            cursor += widths[i] + .025
+    fig = go.Figure()
+    for sentiment in ["Positif", "Netral", "Perlu perhatian"]:
+        subset = terms[terms.warna.eq(sentiment)]
+        idx = subset.index
+        fig.add_trace(go.Scatter(x=[xs[i] for i in idx], y=[ys[i] for i in idx], mode="text",
+            text=subset.kata, textfont={"size": [sizes[i] for i in idx], "color": palette[sentiment], "family": "Inter, Arial, sans-serif"},
+            name=sentiment, customdata=np.column_stack([subset.jumlah.astype(str), subset.rating.round(1).astype(str).str.replace(".", ",", regex=False)]),
+            hovertemplate="%{text}<br>Jumlah ulasan: %{customdata[0]}<br>Rating rata-rata: %{customdata[1]}/5<extra></extra>"))
+    fig.update_xaxes(visible=False, range=[0, 1]); fig.update_yaxes(visible=False, range=[0, 1])
+    return chart_layout(fig, 360, legend_title_text="Rating rata-rata", margin=dict(l=12, r=12, t=30, b=46))
 
 
 def main():
     st.markdown(f"""<style>
     .stApp {{ background: {BRAND['bg']}; }}
-    .block-container {{ padding-top: 1.35rem; padding-bottom: 2.5rem; }}
-    [data-testid='stSidebar'] {{ background: {BRAND['secondary']}; }}
+    .block-container {{ max-width: 1680px; padding: 1.05rem 1.45rem 2.5rem; }}
+    [data-testid='stAppViewContainer'] {{ background: {BRAND['bg']}; }}
+    [data-testid='stAppViewContainer'] > .main {{ background: {BRAND['bg']}; }}
+    [data-testid='stSidebar'] {{ background: #244C43; border-right: 1px solid #1C4038; min-width: 252px !important; }}
+    [data-testid='stSidebar'] > div:first-child {{ min-height: 100vh; padding: .8rem .8rem 1.1rem; }}
+    [data-testid='stSidebarContent'] {{ min-height: 100vh; background: #244C43; }}
+    [data-testid='stSidebarUserContent'] {{ height: calc(100vh - 5.6rem); min-height: calc(100vh - 5.6rem); display: flex; flex-direction: column; overflow-y: auto; }}
+    [data-testid='stSidebarUserContent'] > div {{ height: 100%; }}
+    [data-testid='stSidebarUserContent'] [data-testid='stVerticalBlock']:has(.sidebar-footer) {{ height: 100%; min-height: 100%; }}
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] p,
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] h2,
     [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] h3,
     [data-testid='stSidebar'] label,
     [data-testid='stSidebar'] [data-testid='stCaptionContainer'] * {{ color: #FFFDF9 !important; }}
+    [data-testid='stSidebar'] [data-testid='stHorizontalBlock'] {{ align-items: center; }}
+    [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] h3 {{ font-size: 1.15rem; margin: 0 0 .1rem; letter-spacing: -.02em; }}
+    [data-testid='stSidebar'] .brand-lockup {{ display: flex; align-items: center; gap: .62rem; margin: .25rem .12rem .9rem; }}
+    [data-testid='stSidebar'] .brand-lockup img {{ display: block; width: 46px; height: 46px; object-fit: contain; flex: 0 0 46px; border-radius: 10px; }}
+    [data-testid='stSidebar'] .brand-lockup b {{ display: block; color: #FFFDF9; font-size: 1.08rem; line-height: 1.2; letter-spacing: -.025em; }}
+    [data-testid='stSidebar'] .brand-lockup small {{ display: block; color: #C8DAD2; font-size: .57rem; line-height: 1.3; letter-spacing: .12em; font-weight: 750; margin-top: .22rem; }}
+    [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] .brand-tag {{ color: #C8DAD2; font-size: .7rem; letter-spacing: .11em; font-weight: 650; }}
+    [data-testid='stSidebar'] [data-testid='stMarkdownContainer'] .sidebar-kicker {{ color: #C8DAD2; font-size: .68rem; letter-spacing: .12em; font-weight: 700; margin: .25rem 0 .65rem; }}
+    [data-testid='stSidebar'] .stRadio,
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] {{ box-sizing: border-box; width: 100% !important; }}
+    [data-testid='stSidebar'] .st-key-active_module {{ box-sizing: border-box; width: 100% !important; max-width: none !important; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] {{ align-items: stretch; gap: .28rem; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div {{ box-sizing: border-box; width: 100% !important; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption'] {{ box-sizing: border-box; width: 100% !important; min-height: 42px; display: flex; align-items: center; background: transparent; border: 1px solid transparent; border-radius: 9px; padding: .48rem .62rem; cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption'] > span {{ display: none !important; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption'] > div > div:first-child {{ display: none !important; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption'] [data-testid='stMarkdownContainer'] p {{ display: flex; align-items: center; gap: .62rem; margin: 0; font-size: .88rem; font-weight: 650; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(1) [data-testid='stMarkdownContainer'] p::before {{ content: '▦'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(2) [data-testid='stMarkdownContainer'] p::before {{ content: '▤'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(3) [data-testid='stMarkdownContainer'] p::before {{ content: '▦'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(4) [data-testid='stMarkdownContainer'] p::before {{ content: '♨'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(5) [data-testid='stMarkdownContainer'] p::before {{ content: '▤'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(6) [data-testid='stMarkdownContainer'] p::before {{ content: '▧'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioGroup'] > div:nth-child(7) [data-testid='stMarkdownContainer'] p::before {{ content: '↗'; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption'] [data-testid='stMarkdownContainer'] p::before {{ display: inline-flex; justify-content: center; width: 1rem; font-size: .88rem; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption']:hover:not(:has(input:checked)) {{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.12); }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption']:has(input:checked),
+    [data-testid='stSidebar'] [data-testid='stRadioOption']:has(input:checked):hover {{ background: #C65D3B; border-color: #D46D4B; box-shadow: 0 2px 8px rgba(0,0,0,.12); }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption']:has(input:checked) * {{ color: #FFFDF9 !important; font-weight: 700; }}
+    [data-testid='stSidebar'] [data-testid='stRadioOption']:focus-within {{ outline: 2px solid #F6EBDD; outline-offset: 2px; }}
+    [data-testid='stSidebar'] .sidebar-footer {{ position: fixed; left: .9rem; bottom: .7rem; z-index: 5; width: 222px; box-sizing: border-box; border-top: 1px solid rgba(255,255,255,.18); margin: 0; padding: .68rem .12rem .12rem; background: #244C43; color: #D5E2DC; font-size: .76rem; line-height: 1.5; }}
+    .page-kicker {{ color: {BRAND['primary']}; font-size: .68rem; font-weight: 800; letter-spacing: .14em; margin: 0 0 .1rem; }}
+    .page-status {{ display: flex; justify-content: flex-end; align-items: center; gap: .5rem; flex-wrap: wrap; padding-top: .45rem; }}
+    .page-status span {{ display: inline-flex; align-items: center; border: 1px solid #E8D8C7; border-radius: 7px; background: #FBF3EA; color: {BRAND['primary_dark']}; padding: .38rem .58rem; font-size: .67rem; font-weight: 750; letter-spacing: .045em; white-space: nowrap; }}
+    .page-status .period {{ background: {BRAND['surface']}; color: #5E655F; font-weight: 550; letter-spacing: 0; }}
+    .filter-kicker {{ color: #6C6258; font-size: .67rem; line-height: 1.2; font-weight: 800; letter-spacing: .12em; padding: 0 0 .62rem .12rem; }}
+    [data-testid='stVerticalBlockBorderWrapper'] {{ border: 1px solid #E9DCCB !important; border-radius: 12px !important; background: {BRAND['surface']}; box-shadow: 0 4px 14px rgba(69,49,31,.035); }}
+    [data-testid='stVerticalBlockBorderWrapper'] > div {{ border-radius: 12px; }}
+    [data-testid='stHorizontalBlock'] {{ gap: .72rem; }}
+    div[data-testid='stColumn']:has([data-testid='stPlotlyChart']) {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-radius: 12px; padding: .62rem .68rem .38rem; box-shadow: 0 4px 14px rgba(69,49,31,.035); }}
+    div[data-testid='stColumn']:has([data-testid='stPlotlyChart']) [data-testid='stVerticalBlock'] {{ gap: .25rem; }}
+    [data-testid='stMainBlockContainer'] > [data-testid='stVerticalBlock'] > [data-testid='stElementContainer']:has([data-testid='stPlotlyChart']) {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-radius: 12px; padding: .35rem .55rem .15rem; box-shadow: 0 4px 14px rgba(69,49,31,.035); }}
+    [data-testid='stPlotlyChart'] {{ border-radius: 9px; overflow: hidden; }}
+    [data-testid='stPlotlyChart'] iframe {{ border-radius: 9px; }}
+    [data-testid='stSelectbox'] label, [data-testid='stDateInput'] label {{ font-size: .73rem; font-weight: 650; color: #51483F; margin-bottom: .22rem; }}
+    [data-testid='stSelectbox'] [data-baseweb='select'] > div, [data-testid='stDateInput'] input {{ border-color: #E5D7C7; border-radius: 7px; background: #FFFDF9; min-height: 2.35rem; }}
+    [data-testid='stButton'] button {{ min-height: 2.35rem; border: 1px solid #EBCAB8; border-radius: 7px; color: {BRAND['primary_dark']}; background: #FBF3EA; font-weight: 700; transition: background-color .15s ease, color .15s ease; }}
+    [data-testid='stButton'] button:hover {{ border-color: {BRAND['primary']}; background: {BRAND['primary']}; color: white; }}
+    [data-testid='stCaptionContainer'], [data-testid='stCaptionContainer'] p {{ color: #51483F !important; }}
     h1, h2 {{ color: {BRAND['primary_dark']}; }}
-    .alert-card {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-left: 4px solid {BRAND['neutral']}; border-radius: 10px; padding: 10px 12px; margin: 0 0 8px 0; }}
+    h1 {{ font-size: clamp(1.65rem, 2vw, 2rem); letter-spacing: -.035em; margin: 0 0 .65rem; }}
+    h2 {{ font-size: 1.06rem; letter-spacing: -.015em; margin-bottom: .15rem; }}
+    .alert-card {{ box-sizing: border-box; height: 144px; min-height: 144px; max-height: 144px; overflow: hidden; display: flex; flex-direction: column; gap: 5px; background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-left: 4px solid {BRAND['neutral']}; border-radius: 10px; padding: 10px 12px; margin: 0 0 8px 0; }}
     .alert-card.critical {{ border-left-color: {BRAND['danger']}; }}
     .alert-card.caution {{ border-left-color: {BRAND['warning']}; }}
     .alert-card.notice {{ border-left-color: {BRAND['secondary']}; }}
-    .alert-card small {{ color: #56615C; }}
-    div[data-testid='stMetric'] {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; padding: 13px 15px; border-radius: 12px; min-height: 118px; }}
-    div[data-testid='stMetricLabel'] p {{ font-size: .9rem; }}
-    div[data-testid='stMetricValue'] {{ font-size: 1.35rem; }}
+    .alert-card .alert-title {{ min-height: 2.2em; font-size: .79rem; line-height: 1.3; }}
+    .alert-card .alert-message {{ display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.45em; color: #303B36; font-size: .79rem; line-height: 1.3; }}
+    .alert-card small {{ display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.45em; margin-top: auto; color: #56615C; font-size: .73rem; line-height: 1.3; }}
+    div[data-testid='stMetric'] {{ background: {BRAND['surface']}; border: 1px solid #E9DCCB; border-top: 3px solid {BRAND['primary']}; padding: 12px 10px; border-radius: 12px; min-height: 116px; box-shadow: 0 3px 12px rgba(69,49,31,.04); text-align: center; align-items: center; }}
+    div[data-testid='stHorizontalBlock']:has(div[data-testid='stMetric']) > div[data-testid='stColumn']:nth-child(4n + 2) div[data-testid='stMetric'] {{ border-top-color: {BRAND['secondary']}; }}
+    div[data-testid='stHorizontalBlock']:has(div[data-testid='stMetric']) > div[data-testid='stColumn']:nth-child(4n + 3) div[data-testid='stMetric'] {{ border-top-color: {BRAND['warning']}; }}
+    div[data-testid='stHorizontalBlock']:has(div[data-testid='stMetric']) > div[data-testid='stColumn']:nth-child(4n) div[data-testid='stMetric'] {{ border-top-color: #718A9B; }}
+    div[data-testid='stMetricLabel'] {{ justify-content: center; }}
+    div[data-testid='stMetricLabel'] p {{ font-size: .9rem; font-weight: 650; text-align: center; }}
+    div[data-testid='stMetricValue'] {{ justify-content: center; font-size: 1.55rem; line-height: 1.15; font-weight: 800; }}
+    div[data-testid='stMetricDelta'] {{ font-size: .82rem; }}
+    [data-testid='stCaptionContainer'] p {{ font-size: .88rem; line-height: 1.45; }}
+    .chart-insight {{ background: #F7F1E8; border-left: 3px solid {BRAND['primary']}; border-radius: 0 8px 8px 0; padding: 8px 10px; color: #51483F; font-size: .83rem; line-height: 1.4; margin: 5px 0 8px; }}
+    [data-testid='stDataFrame'] {{ border: 1px solid #E9DCCB; border-radius: 9px; overflow: hidden; background: {BRAND['surface']}; }}
+    [data-testid='stDataFrame'] [role='columnheader'] {{ background: #F7F1E8; font-weight: 750; }}
+    .alert-grid .alert-card {{ height: 144px; }}
     @media (max-width: 1120px) {{
-      [data-testid='stHorizontalBlock'] {{ flex-wrap: wrap; }}
-      [data-testid='stHorizontalBlock'] > [data-testid='column'] {{ flex: 1 1 calc(50% - 1rem) !important; min-width: min(100%, 230px); }}
+      [data-testid='stMain'] [data-testid='stHorizontalBlock'] {{ flex-wrap: wrap; }}
+      [data-testid='stMain'] [data-testid='stHorizontalBlock'] > [data-testid='stColumn'] {{ flex: 1 1 calc(50% - 1rem) !important; min-width: min(100%, 230px); }}
     }}
     </style>""", unsafe_allow_html=True)
     try:
         data = load_data()
     except Exception as exc:
         st.error(str(exc)); st.stop()
-    logo = ASSETS / "logo_mangkuk_kita.png"
+    logo = ASSETS / "logo_mark.png"
     modules = ["Overview", "Orders", "Tables", "Kitchen", "Inventory", "Sales / Reports", "Food Cost & Profit"]
     module_labels = {
-        "Overview": "Overview · Ikhtisar", "Orders": "Orders · Pesanan",
-        "Tables": "Tables · Meja", "Kitchen": "Kitchen · Dapur",
-        "Inventory": "Inventory · Stok", "Sales / Reports": "Sales / Reports · Penjualan & Peta",
-        "Food Cost & Profit": "Food Cost & Profit · Profitabilitas",
+        "Overview": "Ikhtisar", "Orders": "Pesanan",
+        "Tables": "Meja", "Kitchen": "Dapur",
+        "Inventory": "Stok", "Sales / Reports": "Penjualan & Laporan",
+        "Food Cost & Profit": "Profitabilitas",
     }
     if "active_module" not in st.session_state or st.session_state["active_module"] not in modules:
         st.session_state["active_module"] = "Overview"
     with st.sidebar:
+        logo_html = ""
         if logo.exists():
-            st.image(str(logo), width=76)
-        st.markdown("### Mangkuk Kita")
-        st.caption("SATU MANGKUK, SERIBU CERITA")
+            encoded_logo = base64.b64encode(logo.read_bytes()).decode("ascii")
+            logo_html = f"<img src='data:image/png;base64,{encoded_logo}' alt='Logo Mangkuk Kita'>"
+        st.markdown(f"<div class='brand-lockup'>{logo_html}<div><b>Mangkuk Kita</b><small>SATU MANGKUK, SERIBU CERITA</small></div></div>", unsafe_allow_html=True)
         st.divider()
-        st.radio("MODUL UTAMA", modules, format_func=lambda value: module_labels[value], key="active_module")
+        st.markdown("<div class='sidebar-kicker'>MODUL UTAMA</div>", unsafe_allow_html=True)
+        st.radio("Modul utama", modules, format_func=lambda value: module_labels[value], key="active_module", label_visibility="collapsed")
         st.divider()
-        st.caption("Proyek Visualisasi Data · DIF61143")
-        st.caption("Data sintetis · 3 cabang · 14 hari")
+        st.markdown("<div class='sidebar-footer'><b>Proyek Visualisasi Data · DIF61143</b><br>Data sintetis · 3 cabang · 14 hari</div>", unsafe_allow_html=True)
 
     module = st.session_state["active_module"]
     page_titles = {"Overview": "Ikhtisar", "Orders": "Pesanan", "Tables": "Meja",
-                   "Kitchen": "Kitchen · Dapur", "Inventory": "Inventory · Stok", "Sales / Reports": "Sales / Reports · Peta dan Ulasan",
+                   "Kitchen": "Dapur", "Inventory": "Stok", "Sales / Reports": "Penjualan & Laporan",
                    "Food Cost & Profit": "Profitabilitas"}
-    descriptions = {"Overview": "Ringkasan KPI dan kondisi restoran", "Orders": "Pola penjualan, menu, dan jam sibuk",
-                    "Tables": "Okupansi meja dan waktu tunggu", "Kitchen": "Kecepatan dapur dan antrean pesanan",
-                    "Inventory": "Stok bahan dan nilai food waste selama 14 hari", "Sales / Reports": "Lokasi cabang, kinerja, dan suara pelanggan",
-                    "Food Cost & Profit": "Margin menu dan profit per cabang"}
-    st.title(page_titles[module])
-    st.caption(descriptions[module])
+    title_col, status_col = st.columns([3.1, 1.4], vertical_alignment="center")
+    with title_col:
+        st.markdown("<div class='page-kicker'>RESTAURANT MANAGEMENT DASHBOARD</div>", unsafe_allow_html=True)
+        st.title(page_titles[module])
+    with status_col:
+        st.markdown("<div class='page-status'><span>● MODE PRATINJAU · DATA SINTETIS</span><span class='period'>Filter global</span></div>", unsafe_allow_html=True)
     filters = get_filters(data, module)
     orders, items = select_data(data, filters)
     occupancy = occupancy_for_selection(data, orders, filters)
     alerts = insights(data, orders, items, occupancy, filters["branches"])
     branches = data["branches"].set_index("branch_id")["nama"].to_dict()
-    if module == "Inventory":
-        st.caption("Data aktif · ringkasan stok 14 hari · cabang terpilih")
-    else:
-        st.caption(f"Data aktif · {filters['start'].date()} – {filters['end'].date()} · {orders.order_id.nunique():,} pesanan")
     if module == "Overview":
         revenue = float(items["revenue"].sum()) if len(items) else 0
         food_cost = float(items["food_cost_total"].sum()) if len(items) else 0
-        avg_prep = float(orders["durasi_persiapan_menit"].mean()) if len(orders) else 0
-        delay_pct = float(orders["durasi_persiapan_menit"].gt(20).mean() * 100) if len(orders) else 0
-        occ_avg = float(occupancy["occupied_table_minutes"].sum() / (occupancy["branch_id"].map(data["tables"].groupby("branch_id").size()).sum() * 60) * 100) if len(occupancy) else 0
-        waste = data["inventory_metrics"]
-        waste = waste[waste.branch_id.isin(filters["branches"])]
-        waste_pct = float(waste.waste_value.sum() / waste.purchased_value.sum() * 100) if len(waste) and waste.purchased_value.sum() else 0
-        a, b, c, d = st.columns(4)
-        with a: kpi_card("Total Pendapatan", rupiah_compact(revenue), "Jumlah nilai pesanan pada filter aktif.")
-        with b: kpi_card("Total Pesanan", f"{orders.order_id.nunique():,}")
-        with c: kpi_card("Waktu Persiapan", f"{avg_prep:.1f} menit", "Rata-rata dari pesanan masuk sampai selesai disiapkan.")
-        with d: kpi_card("Pesanan Terlambat", f"{delay_pct:.1f}%", "Persiapan lebih dari 20 menit.")
-        a, b, c = st.columns(3)
-        with a: kpi_card("Okupansi Meja", f"{occ_avg:.1f}%", "Bagian dari waktu buka yang meja terisi.")
-        with b: kpi_card("Margin Setelah Bahan", f"{((revenue-food_cost)/revenue*100 if revenue else 0):.1f}%", "Pendapatan dikurangi biaya bahan; belum termasuk biaya operasional lain.")
-        with c: kpi_card("Limbah Bahan", f"{waste_pct:.1f}%", "Nilai bahan terbuang dibanding nilai pembelian selama 14 hari.")
-        left, right = st.columns([1.7, 1], gap="large")
+        profit_after_food = revenue - food_cost
+        margin_pct = profit_after_food / revenue * 100 if revenue else 0
+        order_count = int(orders.order_id.nunique())
+        average_order = revenue / order_count if order_count else 0
+        span_days = max(1, (filters["end"] - filters["start"]).days + 1)
+        split_date = filters["start"] + pd.Timedelta(days=span_days // 2)
+        first_half = items[items.tanggal_dt < split_date].revenue.sum()
+        second_half = items[items.tanggal_dt >= split_date].revenue.sum()
+        revenue_delta = ((second_half - first_half) / first_half * 100) if first_half else None
+        delta_label = (("+" if revenue_delta >= 0 else "−") + angka_id(abs(revenue_delta), 1) + "% · paruh akhir vs awal") if revenue_delta is not None else None
+        branch_sales = items.groupby("branch_id").revenue.sum().sort_values(ascending=False)
+        best_branch_id = branch_sales.index[0] if len(branch_sales) else None
+        menu_sales = items.groupby("nama_menu").qty.sum().sort_values(ascending=False)
+        best_menu = menu_sales.index[0] if len(menu_sales) else None
+        kpis = [
+            ("Total Pendapatan", rupiah_compact(revenue), "Nilai seluruh item pada filter aktif.", delta_label),
+            ("Biaya Bahan", rupiah_compact(food_cost), f"{angka_id(food_cost / revenue * 100 if revenue else 0, 1)}% dari pendapatan.", None),
+            ("Profit Setelah Bahan", rupiah_compact(profit_after_food), "Pendapatan dikurangi biaya bahan; belum termasuk biaya operasional.", None),
+            ("Margin Setelah Bahan", f"{angka_id(margin_pct, 1)}%", "Profit setelah bahan dibagi pendapatan.", None),
+            ("Cabang Terbaik", short_branch(branches.get(best_branch_id, best_branch_id)) if best_branch_id else "—",
+             f"Pendapatan tertinggi: {rupiah_compact(branch_sales.iloc[0])}." if best_branch_id else "Belum ada pendapatan pada filter ini.", None),
+            ("Menu Terlaris", best_menu or "—",
+             f"Terjual {angka_id(menu_sales.iloc[0])} unit pada filter ini." if best_menu else "Belum ada menu pada filter ini.", None),
+        ]
+        for row_index in range(2):
+            kpi_cols = st.columns(3, gap="small")
+            for column, (label, value, help_text, delta) in zip(kpi_cols, kpis[row_index * 3:(row_index + 1) * 3]):
+                with column: kpi_card(label, value, help_text, delta)
+        st.markdown(f"<div class='chart-insight'><b>Ringkasan keuangan:</b> biaya bahan menyerap {angka_id(food_cost / revenue * 100 if revenue else 0, 1)}% pendapatan; profit setelah bahan {rupiah_compact(profit_after_food)}. Tercatat {angka_id(order_count)} pesanan dengan rata-rata nilai {rupiah_compact(average_order)}.</div>", unsafe_allow_html=True)
+        left, right = st.columns([1.15, 1], gap="large")
         with left:
-            st.subheader("Pendapatan harian per cabang")
-            st.caption("Bandingkan perubahan pendapatan dari hari ke hari. Arahkan kursor ke garis untuk melihat nilai.")
+            st.subheader("Tren Pendapatan Harian per Cabang")
+            st.caption("Perubahan nilai transaksi harian untuk membandingkan pola dan kontribusi penjualan tiap cabang.")
             trend = items.groupby(["tanggal", "branch_id"], as_index=False)["revenue"].sum()
             trend["cabang"] = trend.branch_id.map(branches)
-            fig = px.line(trend, x="tanggal", y="revenue", color="cabang", markers=True,
-                          color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"]], labels={"tanggal":"Tanggal", "revenue":"Pendapatan (Rp)", "cabang":"Cabang"})
+            trend["pendapatan_jt"] = trend.revenue / 1_000_000
+            trend["tanggal_label"] = pd.to_datetime(trend.tanggal).map(tanggal_id)
+            fig = px.line(trend, x="tanggal_label", y="pendapatan_jt", color="cabang", markers=True,
+                          color_discrete_map=COLOR_CABANG, category_orders={"cabang": ORDER_CABANG}, labels={"tanggal_label":"Tanggal", "pendapatan_jt":"Pendapatan (juta Rp)", "cabang":"Cabang"})
+            fig.update_yaxes(tickformat=",.0f", ticksuffix=" jt")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
+            if len(trend):
+                totals = trend.groupby("cabang").revenue.sum().sort_values(ascending=False)
+                st.markdown(f"<div class='chart-insight'><b>Temuan:</b> {totals.index[0]} mencatat pendapatan tertinggi ({rupiah_compact(totals.iloc[0])}). Gunakan pola hari yang turun untuk mengevaluasi promosi dan aktivitas penjualan.</div>", unsafe_allow_html=True)
         with right:
-            st.subheader("Peringatan aktif")
-            st.caption("Tiga prioritas teratas ditampilkan; buka daftar untuk melihat sisanya.")
-            render_insights(alerts)
-        left, right = st.columns([1, 1], gap="large")
-        with left:
-            st.subheader("Lokasi dan pendapatan cabang")
-            st.caption("Ukuran lingkaran mengikuti pendapatan. Arahkan kursor ke titik untuk membandingkan cabang.")
+            st.subheader("Peta Kinerja Cabang")
+            st.caption("Peta skematis offline; titik menunjukkan pusat kota cabang, sedangkan ukuran lingkaran membandingkan pendapatan.")
             branch_revenue = items.groupby("branch_id", as_index=False)["revenue"].sum().merge(data["branches"], on="branch_id", how="right")
             branch_revenue["revenue"] = branch_revenue["revenue"].fillna(0)
-            st.plotly_chart(create_branch_map(branch_revenue, 390), use_container_width=True)
-        with right:
-            st.subheader("Okupansi meja menurut jam")
-            st.caption("Garis putus-putus menandai kapasitas tinggi (90%). Puncak membantu menentukan kebutuhan staf.")
-            occ = occupancy.groupby("hour", as_index=False)["occupancy_rate_pct"].mean()
-            fig = px.area(occ, x="hour", y="occupancy_rate_pct", labels={"hour":"Jam", "occupancy_rate_pct":"Meja terisi (%)"}, color_discrete_sequence=[BRAND["secondary"]])
-            fig.add_hline(y=90, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang tinggi 90%")
-            fig.update_yaxes(range=[0, 100], ticksuffix="%")
-            st.plotly_chart(chart_layout(fig, 390), use_container_width=True)
+            st.plotly_chart(create_branch_map(branch_revenue, 420), use_container_width=True)
+        st.subheader("Peringatan Aktif")
+        st.caption(f"{len(alerts)} kondisi operasional melewati ambang pemantauan pada filter saat ini.")
+        render_insights(alerts)
 
     elif module == "Orders":
+        channel_counts = orders.channel.value_counts()
+        channel_cols = st.columns(3)
+        for column, channel in zip(channel_cols, ["Dine-in", "Takeaway", "Delivery"]):
+            with column:
+                kpi_card(f"Pesanan · {channel}", angka_id(int(channel_counts.get(channel, 0))), "Jumlah pesanan pada channel ini setelah filter aktif.")
+        if len(orders):
+            busiest_hour = int(orders.jam.value_counts().idxmax())
+            weekdays = {"Monday":"Senin", "Tuesday":"Selasa", "Wednesday":"Rabu", "Thursday":"Kamis", "Friday":"Jumat", "Saturday":"Sabtu", "Sunday":"Minggu"}
+            busiest_day = weekdays[orders.waktu_masuk.dt.day_name().value_counts().idxmax()]
+            st.caption(f"Puncak pesanan: {busiest_day} sekitar pukul {busiest_hour:02d}. Gunakan jam ini untuk menyesuaikan kesiapan staf dan persediaan.")
         left, right = st.columns(2)
         with left:
             st.subheader("Menu terlaris per kategori")
             st.caption("Batang lebih panjang berarti jumlah unit terjual lebih banyak. Warna menunjukkan kategori menu.")
-            top = items.groupby(["nama_menu", "kategori"], as_index=False)["qty"].sum().sort_values("qty").tail(18)
-            fig = px.bar(top, x="qty", y="nama_menu", color="kategori", orientation="h", labels={"qty":"Unit terjual", "nama_menu":"Menu", "kategori":"Kategori"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
-            st.plotly_chart(chart_layout(fig, 480), use_container_width=True)
+            top = items.groupby(["nama_menu", "kategori"], as_index=False)["qty"].sum().nlargest(10, "qty").sort_values("qty")
+            fig = px.bar(top, x="qty", y="nama_menu", color="kategori", orientation="h", labels={"qty":"Unit terjual", "nama_menu":"Menu", "kategori":"Kategori"}, color_discrete_map=COLOR_KATEGORI, category_orders={"kategori": ORDER_KATEGORI})
+            fig.update_traces(hovertemplate="%{y}<br>Unit terjual: %{x:,.0f}<extra></extra>")
+            st.plotly_chart(chart_layout(fig, 420), use_container_width=True)
+            if len(top):
+                best_seller = top.nlargest(1, "qty").iloc[0]
+                st.markdown(f"<div class='chart-insight'><b>Temuan:</b> {best_seller.nama_menu} paling banyak terjual ({angka_id(best_seller.qty)} unit). Prioritaskan ketersediaan bahan menu ini pada jam ramai.</div>", unsafe_allow_html=True)
         with right:
             st.subheader("Volume pesanan menurut jam dan hari")
             st.caption("Warna lebih pekat menunjukkan lebih banyak pesanan pada jam dan hari tersebut.")
@@ -411,27 +671,66 @@ def main():
             heat = orders.assign(hari=orders.waktu_masuk.dt.day_name().map(day_names)).pivot_table(index="hari", columns="jam", values="order_id", aggfunc="count", fill_value=0)
             day_order = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
             heat = heat.reindex([d for d in day_order if d in heat.index])
-            fig = px.imshow(heat, aspect="auto", color_continuous_scale=[[0, "#F6EBDD"], [.5, BRAND["warning"]], [1, BRAND["primary"]]], labels=dict(x="Jam", y="Hari", color="Jumlah order"))
+            fig = px.imshow(heat, aspect="auto", color_continuous_scale=[[0, "#F6EBDD"], [.5, BRAND["warning"]], [1, BRAND["primary"]]], labels=dict(x="Jam", y="Hari", color="Jumlah pesanan"))
             st.plotly_chart(chart_layout(fig, 480), use_container_width=True)
-        st.subheader("Detail order")
-        order_view = orders.sort_values("waktu_masuk", ascending=False)[["order_id", "tanggal", "branch_id", "channel", "durasi_persiapan_menit", "total_bayar"]].rename(columns={
-            "order_id": "ID pesanan", "tanggal": "Tanggal", "branch_id": "ID cabang",
-            "channel": "Channel", "durasi_persiapan_menit": "Persiapan (menit)", "total_bayar": "Total bayar (Rp)"
+        st.subheader("Rincian pesanan")
+        st.caption("Hijau = selesai · merah = terlambat (>20 menit) · kuning = masih diproses. Total bayar tetap mencakup seluruh item dalam pesanan, meski filter kategori menu aktif.")
+        order_source = orders.sort_values("waktu_masuk", ascending=False).copy()
+        is_late = order_source.durasi_persiapan_menit.gt(20)
+        is_open = order_source.waktu_selesai.isna()
+        order_source["status"] = np.select(
+            [is_late, is_open], ["Terlambat", "Diproses"], default="Selesai")
+        order_view = order_source[["order_id", "waktu_masuk", "branch_id", "channel", "status", "durasi_persiapan_menit", "total_bayar"]].rename(columns={
+            "order_id": "ID pesanan", "waktu_masuk": "Waktu masuk", "branch_id": "ID cabang",
+            "channel": "Channel pesanan", "status": "Status", "durasi_persiapan_menit": "Persiapan (menit)", "total_bayar": "Total bayar (Rp)"
         })
         order_view["Total bayar (Rp)"] = order_view["Total bayar (Rp)"].map(rupiah)
         order_view["Cabang"] = order_view["ID cabang"].map(branches)
         order_view = order_view.drop(columns="ID cabang")
-        st.dataframe(order_view, use_container_width=True, hide_index=True)
+        styled_orders = order_view.style.map(
+            lambda value: "background-color:#E7F1EB;color:#285E47;font-weight:700" if value == "Selesai"
+            else "background-color:#FBE8E4;color:#982F24;font-weight:700" if value == "Terlambat"
+            else "background-color:#FFF2D8;color:#805514;font-weight:700" if value == "Diproses" else "",
+            subset=["Status"])
+        st.dataframe(styled_orders, column_config={"Persiapan (menit)": st.column_config.NumberColumn(format="%.1f")}, use_container_width=True, hide_index=True)
 
     elif module == "Tables":
+        table_counts = data["tables"].groupby("branch_id").size().to_dict()
+        total_tables = sum(table_counts.get(branch, 0) for branch in filters["branches"])
+        peak_occupancy = occupancy.groupby("hour").occupancy_rate_pct.mean() if len(occupancy) else pd.Series(dtype=float)
+        peak_hour = int(peak_occupancy.idxmax()) if len(peak_occupancy) else None
+        peak_value = float(peak_occupancy.max()) if len(peak_occupancy) else 0.0
+        used_per_branch_hour = occupancy.occupancy_rate_pct / 100 * occupancy.branch_id.map(table_counts) if len(occupancy) else pd.Series(dtype=float)
+        cols = st.columns(3)
+        with cols[0]: kpi_card("Kapasitas meja", angka_id(total_tables), "Jumlah meja pada cabang yang dipilih.")
+        with cols[1]: kpi_card("Rata-rata meja terpakai", f"{angka_id(used_per_branch_hour.mean() if len(used_per_branch_hour) else 0, 1)} meja", "Estimasi rata-rata meja terpakai per cabang pada setiap jam yang dianalisis.")
+        with cols[2]: kpi_card("Jam okupansi tertinggi", f"{peak_hour:02d}.00 · {angka_id(peak_value, 1)}%" if peak_hour is not None else "—", "Jam dengan rata-rata okupansi tertinggi pada data terpilih.")
+        st.caption("Ringkasan kapasitas dan okupansi di atas menunjukkan gambaran agregat cabang terpilih.")
+        st.subheader("Denah meja cabang")
+        st.caption("Denah skematis: posisi meja dan jalur dibuat untuk membantu orientasi, bukan berdasarkan layout bangunan. Warna menunjukkan frekuensi pesanan dine-in pada data yang lolos filter, bukan status meja saat ini. Jika channel Dine-in tidak dipilih, jumlah pesanan per meja akan nol. Arahkan kursor ke meja untuk melihat kapasitas dan jumlah pesanan.")
+        selected_table_branches = filters["branches"]
+        if len(selected_table_branches) > 1:
+            branch_tabs = st.tabs([short_branch(branches[branch]) for branch in selected_table_branches])
+            for tab, branch_id in zip(branch_tabs, selected_table_branches):
+                with tab:
+                    branch_tables = data["tables"][data["tables"].branch_id.eq(branch_id)]
+                    branch_orders = orders[orders.branch_id.eq(branch_id)]
+                    st.plotly_chart(create_table_plan(branch_tables, branch_orders), use_container_width=True)
+        elif selected_table_branches:
+            branch_id = selected_table_branches[0]
+            branch_tables = data["tables"][data["tables"].branch_id.eq(branch_id)]
+            branch_orders = orders[orders.branch_id.eq(branch_id)]
+            st.plotly_chart(create_table_plan(branch_tables, branch_orders), use_container_width=True)
         st.subheader("Okupansi meja menurut jam")
         st.caption("Garis membandingkan rata-rata meja terisi pada setiap cabang; garis putus-putus menandai 90% kapasitas.")
         occ = occupancy.groupby(["hour", "branch_id"], as_index=False)["occupancy_rate_pct"].mean()
         occ["cabang"] = occ.branch_id.map(branches)
-        fig = px.line(occ, x="hour", y="occupancy_rate_pct", color="cabang", markers=True, labels={"hour":"Jam", "occupancy_rate_pct":"Meja terisi (%)", "cabang":"Cabang"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"]])
-        fig.add_hline(y=90, line_dash="dash", line_color=BRAND["danger"], annotation_text="Kapasitas tinggi 90%")
+        fig = px.line(occ, x="hour", y="occupancy_rate_pct", color="cabang", markers=True, labels={"hour":"Jam", "occupancy_rate_pct":"Meja terisi (%)", "cabang":"Cabang"}, color_discrete_map=COLOR_CABANG, category_orders={"cabang": ORDER_CABANG})
+        fig.add_hline(y=90, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang okupansi 90%", annotation_position="bottom left")
         fig.update_yaxes(range=[0, 100], ticksuffix="%")
         st.plotly_chart(chart_layout(fig, 430), use_container_width=True)
+        if peak_hour is not None:
+            st.markdown(f"<div class='chart-insight'><b>Temuan:</b> penggunaan meja tertinggi terjadi sekitar pukul {peak_hour:02d}.00 ({angka_id(peak_value, 1)}%). Pertimbangkan penjadwalan staf dan pengelolaan reservasi di rentang ini.</div>", unsafe_allow_html=True)
         waits = orders[orders.channel.eq("Dine-in")]
         st.subheader("Waktu tunggu meja")
         if len(waits):
@@ -441,118 +740,194 @@ def main():
             st.plotly_chart(chart_layout(fig, 330), use_container_width=True)
 
     elif module == "Kitchen":
+        avg_order_prep = float(orders.durasi_persiapan_menit.mean()) if len(orders) else 0
+        delayed_count = int(orders.durasi_persiapan_menit.gt(20).sum()) if len(orders) else 0
+        station_summary = items.groupby("station", as_index=False).agg(rata_persiapan=("waktu_persiapan_menit", "mean"), jumlah_item=("waktu_persiapan_menit", "count")) if len(items) else pd.DataFrame(columns=["station", "rata_persiapan", "jumlah_item"])
+        slow_station = station_summary.sort_values("rata_persiapan", ascending=False).head(1)
+        slow_station_label = f"{ORDER_STATION.get(slow_station.iloc[0].station, slow_station.iloc[0].station)} · {angka_id(slow_station.iloc[0].rata_persiapan, 1)} mnt" if len(slow_station) else "—"
+        cols = st.columns(3)
+        with cols[0]: kpi_card("Rata-rata persiapan pesanan", f"{angka_id(avg_order_prep, 1)} menit", "Dihitung dari waktu pesanan masuk sampai selesai disiapkan.")
+        with cols[1]: kpi_card("Pesanan terlambat", angka_id(delayed_count), "Jumlah pesanan dengan waktu persiapan lebih dari 20 menit.")
+        with cols[2]: kpi_card("Pos dengan rata-rata terlama", slow_station_label, "Rata-rata waktu persiapan per item menu yang tercatat pada setiap pos dapur.")
         left, right = st.columns(2)
         with left:
-            st.subheader("Sebaran waktu persiapan per station")
+            st.subheader("Sebaran waktu persiapan per pos dapur")
             st.caption("Garis di tengah kotak = median; kotak merangkum setengah tengah pesanan. Makin rendah, makin cepat.")
             prep = items.sample(min(len(items), 8000), random_state=61143) if len(items) else items
-            fig = px.box(prep, x="station", y="waktu_persiapan_menit", color="station", points=False, labels={"station":"Station", "waktu_persiapan_menit":"Menit"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
+            prep["pos_dapur"] = prep.station.map(ORDER_STATION).fillna(prep.station)
+            fig = px.box(prep, x="pos_dapur", y="waktu_persiapan_menit", points=False, labels={"pos_dapur":"Pos dapur", "waktu_persiapan_menit":"Waktu persiapan (menit)"}, color_discrete_sequence=[BRAND["secondary"]])
             st.plotly_chart(chart_layout(fig), use_container_width=True)
+            if len(station_summary):
+                station_view = station_summary.copy()
+                station_view["Pos dapur"] = station_view.station.map(ORDER_STATION).fillna(station_view.station)
+                station_view["Rata-rata persiapan (menit)"] = station_view.rata_persiapan.map(lambda value: angka_id(value, 1))
+                st.caption("Ringkasan rata-rata persiapan per pos dapur:")
+                st.dataframe(station_view[["Pos dapur", "Rata-rata persiapan (menit)"]].sort_values("Rata-rata persiapan (menit)", ascending=False), use_container_width=True, hide_index=True)
         with right:
             st.subheader("Persentase pesanan terlambat per jam")
-            st.caption("Order dianggap terlambat bila persiapan lebih dari 20 menit. Garis menandai batas peringatan 15%.")
+            st.caption("Pesanan terlambat berarti persiapan lebih dari 20 menit. Garis menunjukkan ambang keterlambatan 15%.")
             hourly = orders.groupby("jam", as_index=False).agg(delayed=("durasi_persiapan_menit", lambda s: s.gt(20).mean() * 100))
-            fig = px.bar(hourly, x="jam", y="delayed", labels={"jam":"Jam", "delayed":"Order terlambat (%)"}, color="delayed", color_continuous_scale=[BRAND["secondary"], BRAND["warning"], BRAND["danger"]])
-            fig.add_hline(y=15, line_dash="dash", annotation_text="Alert 15%")
+            fig = go.Figure(go.Bar(x=hourly.jam, y=hourly.delayed, marker_color=[BRAND["danger"] if v > 15 else BRAND["secondary"] for v in hourly.delayed], hovertemplate="Jam %{x}: %{y:.1f}% pesanan terlambat<extra></extra>"))
+            fig.add_hline(y=15, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang 15%", annotation_position="top left")
+            fig.update_xaxes(dtick=1, title="Jam")
             fig.update_yaxes(ticksuffix="%")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
-        st.subheader("Pesanan aktif dan waktu persiapan")
-        st.caption("Setiap titik adalah satu pesanan. Sebaran ke kanan-atas dapat menunjukkan dapur yang kewalahan.")
-        scatter = orders.sample(min(len(orders), 3500), random_state=61143) if len(orders) else orders
-        scatter["cabang"] = scatter.branch_id.map(branches)
-        fig = px.scatter(scatter, x="pesanan_aktif", y="durasi_persiapan_menit", color="cabang", opacity=.5, labels={"pesanan_aktif":"Pesanan aktif saat masuk", "durasi_persiapan_menit":"Waktu persiapan (menit)", "cabang":"Cabang"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"]])
-        if len(scatter) > 1:
-            xline = np.linspace(scatter["pesanan_aktif"].min(), scatter["pesanan_aktif"].max(), 50)
-            slope, intercept = np.polyfit(scatter["pesanan_aktif"], scatter["durasi_persiapan_menit"], 1)
-            fig.add_trace(go.Scatter(x=xline, y=slope*xline+intercept, mode="lines", name="Tren", line=dict(color=BRAND["danger"], dash="dash")))
-        st.plotly_chart(chart_layout(fig), use_container_width=True)
-        st.subheader("Alur pesanan dari masuk hingga pembayaran")
-        st.caption("Lebar alur menunjukkan jumlah pesanan. Percabangan menunjukkan channel yang digunakan.")
-        channel_counts = orders.channel.value_counts().to_dict()
-        fig = go.Figure(go.Sankey(node=dict(label=["Order masuk", "Dapur", "Siap disajikan", "Dine-in", "Takeaway", "Delivery", "Pembayaran"], color=[BRAND["primary"], BRAND["secondary"], BRAND["success"], BRAND["warning"], BRAND["warning"], BRAND["warning"], BRAND["primary_dark"]], pad=18, thickness=20),
-            link=dict(source=[0, 1, 2, 2, 2, 3, 4, 5], target=[1, 2, 3, 4, 5, 6, 6, 6], value=[len(orders), len(orders), channel_counts.get("Dine-in", 0), channel_counts.get("Takeaway", 0), channel_counts.get("Delivery", 0), channel_counts.get("Dine-in", 0), channel_counts.get("Takeaway", 0), channel_counts.get("Delivery", 0)], color="rgba(47,93,80,.25)")))
-        st.plotly_chart(chart_layout(fig, 390), use_container_width=True)
-
+            if len(hourly):
+                peak_delay = hourly.loc[hourly.delayed.idxmax()]
+                st.markdown(f"<div class='chart-insight'><b>Temuan:</b> keterlambatan tertinggi terjadi pukul {int(peak_delay.jam):02d}.00 ({angka_id(peak_delay.delayed, 1)}%). Atur kesiapan kru dan bahan sebelum jam tersebut.</div>", unsafe_allow_html=True)
+        st.subheader("Waktu persiapan menurut jumlah pesanan aktif")
+        st.caption("Kotak membandingkan median dan rentang tengah waktu persiapan pada tiap tingkat beban dapur.")
+        prep_groups = orders.copy()
+        prep_groups["kelompok_aktif"] = pd.cut(prep_groups.pesanan_aktif, bins=[-1, 2, 5, 8, 11, np.inf], labels=["0–2", "3–5", "6–8", "9–11", "12+"])
+        fig = px.box(prep_groups, x="kelompok_aktif", y="durasi_persiapan_menit", points=False,
+                     labels={"kelompok_aktif":"Pesanan aktif saat masuk", "durasi_persiapan_menit":"Waktu persiapan (menit)"}, color_discrete_sequence=[BRAND["secondary"]])
+        st.plotly_chart(chart_layout(fig, 380, showlegend=False), use_container_width=True)
     elif module == "Inventory":
         inv = data["inventory_metrics"].copy()
         inv = inv[inv.branch_id.isin(filters["branches"])]
         inv["cabang"] = inv.branch_id.map(branches)
+        inv["rasio_stok"] = inv.stok_saat_ini / inv.stok_minimum.replace(0, np.nan)
+        inv["status_stok"] = np.select([inv.stok_saat_ini.le(0), inv.stok_saat_ini.lt(inv.stok_minimum)], ["Habis", "Menipis"], default="Aman")
+        status_rank = {"Habis": 0, "Menipis": 1, "Aman": 2}
+        inv["urutan_status"] = inv.status_stok.map(status_rank)
+        low_count = int(inv.status_stok.isin(["Habis", "Menipis"]).sum())
+        empty_count = int(inv.status_stok.eq("Habis").sum())
+        cols = st.columns(3)
+        with cols[0]: kpi_card("Bahan di bawah minimum", angka_id(low_count), "Termasuk bahan habis dan stok yang kurang dari batas minimum.")
+        with cols[1]: kpi_card("Bahan habis", angka_id(empty_count), "Bahan dengan stok saat ini nol atau kurang.")
+        with cols[2]: kpi_card("Bahan aman", angka_id(int(inv.status_stok.eq('Aman').sum())), "Stok saat ini sama dengan atau melebihi minimum.")
         left, right = st.columns(2)
         with left:
-            st.subheader("Stok tersedia dibanding batas minimum")
-            st.caption("Setiap pasangan batang membandingkan stok sekarang dengan batas minimum per bahan.")
-            stock = inv.sort_values("stok_saat_ini").tail(25)
-            long = stock.melt(id_vars=["nama_bahan", "cabang"], value_vars=["stok_saat_ini", "stok_minimum"], var_name="jenis", value_name="jumlah")
-            long["jenis"] = long["jenis"].map({"stok_saat_ini": "Stok tersedia", "stok_minimum": "Batas minimum"})
-            fig = px.bar(long, x="nama_bahan", y="jumlah", color="jenis", barmode="group", facet_col="cabang", facet_col_wrap=1, labels={"nama_bahan":"Bahan", "jumlah":"Stok (unit bahan)", "jenis":"Jenis stok", "cabang":"Cabang"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"]])
-            st.plotly_chart(chart_layout(fig, 500), use_container_width=True)
+            st.subheader("Ketersediaan stok terhadap minimum")
+            st.caption("Rasio 1,00 berarti stok tepat di batas minimum; merah menunjukkan stok di bawah batas.")
+            heat = inv.pivot_table(index="nama_bahan", columns="cabang", values="rasio_stok", aggfunc="mean").reindex(columns=[branches[b] for b in filters["branches"] if b in branches])
+            heat.columns = [short_branch(c) for c in heat.columns]
+            fig = go.Figure(go.Heatmap(z=heat.values, x=heat.columns, y=heat.index, zmin=0, zmax=2, zmid=1,
+                colorscale=[[0, "#B74736"], [.5, "#F2C66D"], [1, "#2F5D50"]], text=np.round(heat.values, 2), texttemplate="%{text:.2f}",
+                colorbar=dict(title="Rasio"), hovertemplate="%{y}<br>%{x}: %{z:.2f}× minimum<extra></extra>"))
+            st.plotly_chart(chart_layout(fig, max(420, min(760, 28 * len(heat))), showlegend=False), use_container_width=True)
         with right:
-            st.subheader("Nilai limbah bahan tertinggi")
-            st.caption("Menunjukkan nilai rupiah bahan terbuang selama periode data.")
-            inv["waste_value"] = inv["total_terbuang"] * inv["harga_satuan"]
-            waste = inv.sort_values("waste_value").tail(15)
-            waste["cabang"] = waste.branch_id.map(branches)
-            fig = px.bar(waste, x="waste_value", y="nama_bahan", color="kategori", orientation="h", facet_col="cabang", facet_col_wrap=1, labels={"waste_value":"Nilai limbah (Rp)", "nama_bahan":"Bahan", "kategori":"Kategori bahan", "cabang":"Cabang"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"]])
-            st.plotly_chart(chart_layout(fig, 500), use_container_width=True)
+            st.subheader("Persentase bahan terbuang")
+            st.caption("Limbah dihitung sebagai nilai bahan terbuang ÷ nilai pembelian. Garis putus-putus menunjukkan ambang proyek 8%.")
+            waste = inv.nlargest(15, "waste_rate_pct").copy()
+            waste["cabang"] = waste.branch_id.map(branches).map(short_branch)
+            fig = px.bar(waste.sort_values("waste_rate_pct"), x="waste_rate_pct", y="nama_bahan", color="cabang", orientation="h", barmode="group",
+                labels={"waste_rate_pct":"Bahan terbuang (%)", "nama_bahan":"Bahan", "cabang":"Cabang"}, color_discrete_map={short_branch(k): v for k, v in COLOR_CABANG.items()},
+                category_orders={"cabang": [short_branch(x) for x in ORDER_CABANG]})
+            fig.add_vline(x=8, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang limbah 8%", annotation_position="top")
+            fig.update_xaxes(ticksuffix="%")
+            st.plotly_chart(chart_layout(fig, max(420, min(760, 28 * len(waste)))), use_container_width=True)
+            if len(waste):
+                top_waste = waste.loc[waste.waste_rate_pct.idxmax()]
+                over_waste = int(inv.waste_rate_pct.gt(8).sum())
+                st.markdown(f"<div class='chart-insight'><b>Temuan:</b> {top_waste.nama_bahan} di {short_branch(branches[top_waste.branch_id])} memiliki limbah tertinggi ({angka_id(top_waste.waste_rate_pct, 1)}%); {over_waste} catatan bahan-cabang melewati 8%. Periksa pembelian dan persiapan bahan tersebut.</div>", unsafe_allow_html=True)
         st.subheader("Daftar stok dan limbah")
-        inventory_view = inv[["cabang", "nama_bahan", "kategori", "stok_saat_ini", "stok_minimum", "total_dibeli", "total_terbuang", "stockout_events_14d", "waste_rate_pct"]].sort_values(["cabang", "stok_saat_ini"]).rename(columns={
-            "cabang": "Cabang", "nama_bahan": "Bahan", "kategori": "Kategori", "stok_saat_ini": "Stok tersedia",
-            "stok_minimum": "Stok minimum", "total_dibeli": "Jumlah dibeli", "total_terbuang": "Jumlah terbuang",
-            "stockout_events_14d": "Kejadian kehabisan stok", "waste_rate_pct": "Limbah (%)"
-        })
-        inventory_view["Limbah (%)"] = inventory_view["Limbah (%)"].map(lambda value: f"{value:.1f}%")
-        st.dataframe(inventory_view, use_container_width=True, hide_index=True)
+        inv["saran_stok"] = np.select([inv.status_stok.eq("Habis"), inv.status_stok.eq("Menipis")], ["Pengadaan segera", "Tambah hingga minimum"], default="Stok mencukupi")
+        st.caption("Baris prioritas muncul lebih dahulu. Limbah ditampilkan sebagai persentase dari nilai pembelian; angka stok tetap memakai satuan bahan.")
+        inventory_view = inv.sort_values(["urutan_status", "rasio_stok", "cabang"])[["cabang", "nama_bahan", "satuan", "status_stok", "stok_saat_ini", "stok_minimum", "total_dibeli", "total_terbuang", "stockout_events_14d", "waste_rate_pct", "saran_stok"]].rename(columns={
+            "cabang": "Cabang", "nama_bahan": "Bahan", "satuan": "Satuan", "stok_saat_ini": "Stok tersedia",
+            "stok_minimum": "Stok minimum", "total_dibeli": "Dibeli (14 hari)", "total_terbuang": "Terbuang (14 hari)",
+            "stockout_events_14d": "Kejadian habis", "waste_rate_pct": "Limbah (%)", "status_stok": "Status stok", "saran_stok": "Tindak lanjut"
+        }).reset_index(drop=True)
+        inventory_view["Status stok"] = inventory_view["Status stok"].map({"Habis": "🔴 Habis", "Menipis": "🟠 Menipis", "Aman": "🟢 Aman"})
+        inventory_columns = {
+            "Stok tersedia": st.column_config.NumberColumn(format="%.1f"),
+            "Stok minimum": st.column_config.NumberColumn(format="%.1f"),
+            "Dibeli (14 hari)": st.column_config.NumberColumn(format="%.1f"),
+            "Terbuang (14 hari)": st.column_config.NumberColumn(format="%.1f"),
+            "Kejadian habis": st.column_config.NumberColumn(format="%d"),
+            "Limbah (%)": st.column_config.ProgressColumn(min_value=0, max_value=40, format="%.1f"),
+        }
+        st.dataframe(inventory_view, column_config=inventory_columns, use_container_width=True, hide_index=True, height=520)
 
     elif module == "Sales / Reports":
-        st.subheader("Peta lokasi dan pendapatan cabang")
-        st.caption("Lingkaran lebih besar berarti pendapatan lebih tinggi; arahkan kursor ke titik untuk melihat nilainya.")
-        branch_rev = items.groupby("branch_id", as_index=False)["revenue"].sum().merge(data["branches"], on="branch_id", how="right")
-        branch_rev["revenue"] = branch_rev["revenue"].fillna(0)
-        st.plotly_chart(create_branch_map(branch_rev, 500), use_container_width=True)
-        st.caption("Koordinat memakai titik kota dari rancangan, bukan alamat gerai terverifikasi.")
-        st.subheader("Topik yang sering disebut pelanggan")
-        st.caption("Batang menunjukkan berapa kali kata muncul di komentar yang lolos filter; ini membantu melihat tema ulasan, bukan sentimen otomatis.")
         comments = data["feedback_joined"]
         comments = comments[comments.order_id.isin(orders.order_id)]
-        st.plotly_chart(build_feedback_terms(comments["komentar"]), use_container_width=True)
+        st.subheader("Pendapatan menurut channel pesanan")
+        st.caption("Bandingkan kontribusi setiap channel selama periode dan cabang terpilih.")
+        by_channel = items.groupby(["channel", "branch_id"], as_index=False).revenue.sum()
+        by_channel["cabang"] = by_channel.branch_id.map(branches).map(short_branch)
+        by_channel["pendapatan_jt"] = by_channel.revenue / 1_000_000
+        channel_total = by_channel.groupby("channel").revenue.sum().sort_values(ascending=False)
+        total_channel_revenue = channel_total.sum()
+        top_channel = channel_total.index[0] if len(channel_total) else "—"
+        top_share = float(channel_total.iloc[0] / total_channel_revenue * 100) if total_channel_revenue else 0
+        summary_cols = st.columns(3)
+        with summary_cols[0]: kpi_card("Channel dengan pendapatan terbesar", f"{top_channel} · {angka_id(top_share, 1)}%", "Bagian pendapatan dari channel terbesar di antara channel terpilih.")
+        with summary_cols[1]: kpi_card("Jumlah ulasan", angka_id(len(comments)), "Ulasan yang terhubung dengan pesanan dalam filter saat ini.")
+        with summary_cols[2]: kpi_card("Rating rata-rata", f"{angka_id(comments.rating.mean(), 2)}/5" if len(comments) else "—", "Rata-rata rating pada ulasan yang terhubung dengan pesanan terpilih.")
+        fig = px.bar(by_channel, x="channel", y="pendapatan_jt", color="cabang", barmode="group",
+            labels={"channel":"Channel pesanan", "pendapatan_jt":"Pendapatan (juta Rp)", "cabang":"Cabang"},
+            color_discrete_map={short_branch(k): v for k, v in COLOR_CABANG.items()}, category_orders={"cabang": [short_branch(x) for x in ORDER_CABANG]})
+        fig.update_yaxes(tickformat=",.0f", ticksuffix=" jt")
+        st.plotly_chart(chart_layout(fig, 390), use_container_width=True)
+        st.subheader("Topik yang sering disebut pelanggan")
+        st.caption("Ukuran kata = jumlah ulasan yang memuat kata (satu kali per ulasan). Warna = rating rata-rata ulasan tersebut, bukan analisis sentimen otomatis. Arahkan kursor untuk melihat jumlah dan rating.")
+        st.plotly_chart(build_feedback_terms(comments), use_container_width=True)
         if len(comments):
-            st.caption(f"{len(comments)} ulasan pada filter saat ini; rating rata-rata {comments.rating.mean():.2f}/5.")
+            st.caption(f"{angka_id(len(comments))} ulasan pada filter saat ini; rating rata-rata {angka_id(comments.rating.mean(), 2)}/5.")
         st.subheader("Ringkasan kinerja cabang")
         summary = items.groupby("branch_id", as_index=False).agg(revenue=("revenue", "sum"), food_cost=("food_cost_total", "sum"), units=("qty", "sum"))
         summary["cabang"] = summary.branch_id.map(branches)
         summary["margin_pct"] = (summary.revenue - summary.food_cost) / summary.revenue * 100
+        st.caption("Pendapatan dan unit terjual dibandingkan dengan margin setelah biaya bahan; gunakan hasil ini untuk menentukan cabang yang perlu ditinjau lebih lanjut.")
         summary_view = summary[["cabang", "revenue", "units", "margin_pct"]].sort_values("revenue", ascending=False).rename(
-            columns={"cabang": "Cabang", "revenue": "Pendapatan", "units": "Unit terjual", "margin_pct": "Margin (%)"})
+            columns={"cabang": "Cabang", "revenue": "Pendapatan", "units": "Unit terjual", "margin_pct": "Margin setelah bahan (%)"})
         summary_view["Pendapatan"] = summary_view["Pendapatan"].map(rupiah)
-        summary_view["Margin (%)"] = summary_view["Margin (%)"].map(lambda value: f"{value:.1f}%")
+        summary_view["Unit terjual"] = summary_view["Unit terjual"].map(angka_id)
+        summary_view["Margin setelah bahan (%)"] = summary_view["Margin setelah bahan (%)"].map(lambda value: f"{angka_id(value, 1)}%")
         st.dataframe(summary_view, use_container_width=True, hide_index=True)
 
     elif module == "Food Cost & Profit":
         menu = items.groupby(["menu_id", "nama_menu", "kategori", "harga_satuan", "food_cost"], as_index=False).agg(units=("qty", "sum"), revenue=("revenue", "sum"), food_cost_total=("food_cost_total", "sum"), profit=("profit", "sum"))
         menu["margin_pct"] = (menu.revenue - menu.food_cost_total) / menu.revenue.replace(0, np.nan) * 100
+        best = menu.loc[menu.margin_pct.idxmax()] if len(menu) else None
+        lowest = menu.loc[menu.margin_pct.idxmin()] if len(menu) else None
+        cols = st.columns(3)
+        with cols[0]: kpi_card("Margin tertinggi", f"{best.nama_menu} · {angka_id(best.margin_pct, 1)}%" if best is not None else "—", "Menu dengan persentase margin setelah bahan tertinggi pada filter saat ini.")
+        with cols[1]: kpi_card("Margin terendah", f"{lowest.nama_menu} · {angka_id(lowest.margin_pct, 1)}%" if lowest is not None else "—", "Menu dengan persentase margin setelah bahan terendah pada filter saat ini.")
+        with cols[2]: kpi_card("Menu di bawah ambang", angka_id(int(menu.margin_pct.lt(25).sum())), "Jumlah menu dengan margin setelah bahan di bawah 25%.")
         left, right = st.columns(2)
         with left:
-            st.subheader("Harga jual dan margin menu")
-            st.caption("Setiap titik = satu menu. Garis 25% menandai margin bahan rendah; titik besar menunjukkan menu lebih laris.")
-            fig = px.scatter(menu, x="harga_satuan", y="margin_pct", size="units", color="kategori", hover_name="nama_menu", labels={"harga_satuan":"Harga jual (Rp)", "margin_pct":"Margin menu (%)", "units":"Unit terjual", "kategori":"Kategori"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
-            fig.add_hline(y=25, line_dash="dash", line_color=BRAND["danger"], annotation_text="Ambang margin 25%")
+            st.subheader("Margin Setelah Bahan per Menu")
+            below_threshold = int(menu.margin_pct.lt(25).sum())
+            st.caption(f"Batang membandingkan margin setiap menu. Garis 25% adalah ambang evaluasi; {below_threshold} menu berada di bawahnya.")
+            menu["status_margin"] = np.where(menu.margin_pct.lt(25), "Di bawah 25%", "Memenuhi 25%")
+            margin_order = menu.sort_values("margin_pct")
+            fig = px.bar(margin_order, x="margin_pct", y="nama_menu", orientation="h", color="status_margin",
+                color_discrete_map={"Di bawah 25%": BRAND["danger"], "Memenuhi 25%": BRAND["secondary"]},
+                category_orders={"status_margin": ["Di bawah 25%", "Memenuhi 25%"]},
+                labels={"margin_pct":"Margin setelah bahan (%)", "nama_menu":"Menu", "status_margin":"Status margin"})
+            fig.add_vline(x=25, line_dash="dash", line_color=BRAND["neutral"], annotation_text="Ambang 25%", annotation_position="top")
+            fig.update_xaxes(ticksuffix="%")
+            fig.update_layout(legend_title_text="")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
+            if best is not None and lowest is not None:
+                st.markdown(f"<div class='chart-insight'><b>Insight:</b> {below_threshold} menu perlu ditinjau; mulai dari {lowest.nama_menu} ({angka_id(lowest.margin_pct, 1)}%). Evaluasi harga jual atau biaya bahan sebelum mengubah menu.</div>", unsafe_allow_html=True)
         with right:
-            st.subheader("Profit bahan per cabang dan kategori")
-            st.caption("Bandingkan sisa pendapatan setelah biaya bahan; biaya lain seperti gaji dan sewa belum dikurangi.")
+            st.subheader("Margin setelah bahan per cabang dan kategori")
+            st.caption("Nilai pendapatan setelah biaya bahan; biaya gaji, sewa, dan operasional lain belum dikurangi.")
             profit = items.groupby(["branch_id", "kategori"], as_index=False)["profit"].sum()
-            profit["cabang"] = profit.branch_id.map(branches)
-            fig = px.bar(profit, x="cabang", y="profit", color="kategori", barmode="group", labels={"cabang":"Cabang", "profit":"Profit bahan (Rp)", "kategori":"Kategori"}, color_discrete_sequence=[BRAND["primary"], BRAND["secondary"], BRAND["warning"], BRAND["success"]])
+            profit["cabang"] = profit.branch_id.map(branches).map(short_branch)
+            profit["margin_setelah_bahan_jt"] = profit.profit / 1_000_000
+            fig = px.bar(profit, x="cabang", y="margin_setelah_bahan_jt", color="kategori", barmode="group", labels={"cabang":"Cabang", "margin_setelah_bahan_jt":"Margin setelah bahan (juta Rp)", "kategori":"Kategori"}, color_discrete_map=COLOR_KATEGORI, category_orders={"kategori": ORDER_KATEGORI, "cabang": [short_branch(x) for x in ORDER_CABANG]})
+            fig.update_yaxes(tickformat=",.0f", ticksuffix=" jt")
             st.plotly_chart(chart_layout(fig), use_container_width=True)
         st.subheader("Rincian profitabilitas menu")
-        menu_view = menu[["nama_menu", "kategori", "units", "revenue", "food_cost_total", "profit", "margin_pct"]].sort_values("profit", ascending=False).rename(columns={
+        st.caption("Menu diurutkan berdasarkan unit terjual terbanyak. Status warna membantu memisahkan margin di bawah dan di atas ambang analisis.")
+        menu_view = menu[["nama_menu", "kategori", "units", "revenue", "food_cost_total", "profit", "margin_pct"]].sort_values("units", ascending=False).rename(columns={
             "nama_menu": "Menu", "kategori": "Kategori", "units": "Unit terjual", "revenue": "Pendapatan (Rp)",
-            "food_cost_total": "Biaya bahan (Rp)", "profit": "Sisa setelah bahan (Rp)", "margin_pct": "Margin (%)"
+            "food_cost_total": "Biaya bahan (Rp)", "profit": "Margin setelah bahan (Rp)", "margin_pct": "Margin setelah bahan (%)"
         })
-        for column in ["Pendapatan (Rp)", "Biaya bahan (Rp)", "Sisa setelah bahan (Rp)"]:
+        menu_view["Status margin"] = np.where(menu_view["Margin setelah bahan (%)"] < 25, "Perlu ditinjau", "Memenuhi ambang")
+        menu_view["Unit terjual"] = menu_view["Unit terjual"].map(angka_id)
+        for column in ["Pendapatan (Rp)", "Biaya bahan (Rp)", "Margin setelah bahan (Rp)"]:
             menu_view[column] = menu_view[column].map(rupiah)
-        menu_view["Margin (%)"] = menu_view["Margin (%)"].map(lambda value: f"{value:.1f}%")
-        st.dataframe(menu_view, use_container_width=True, hide_index=True)
+        menu_view["Margin setelah bahan (%)"] = menu_view["Margin setelah bahan (%)"].map(lambda value: f"{angka_id(value, 1)}%")
+        styled_menu = menu_view.style.map(
+            lambda value: "background-color:#FBE8E4;color:#982F24;font-weight:700" if value == "Perlu ditinjau" else "background-color:#E7F1EB;color:#285E47;font-weight:700",
+            subset=["Status margin"])
+        st.dataframe(styled_menu, use_container_width=True, hide_index=True)
 
 
 
