@@ -82,16 +82,21 @@ def make_menu() -> tuple[pd.DataFrame, np.ndarray]:
 
 def make_inventory(rng: np.random.Generator) -> pd.DataFrame:
     critical = {("B01", "Ayam"), ("B02", "Susu"), ("B03", "Biji kopi")}
+    high_waste = {("B01", "Sayuran"), ("B01", "Buah campur"), ("B02", "Ayam"),
+                  ("B02", "Kentang"), ("B03", "Ikan dori")}
     rows = []
     for branch in BRANCHES:
         for i, (name, category, unit) in enumerate(INGREDIENTS, 1):
             initial = rng.uniform(20, 70) if category == "Segar" else rng.uniform(30, 100)
             purchased = rng.uniform(30, 100)
-            waste = (initial + purchased) * rng.uniform(.085, .13) if category == "Segar" else (initial + purchased) * rng.uniform(.02, .055)
+            waste_rate = (rng.uniform(.085, .115) if (branch["branch_id"], name) in high_waste
+                          else rng.uniform(.03, .075) if category == "Segar"
+                          else rng.uniform(.02, .05))
+            waste = purchased * waste_rate
             used = (initial + purchased) * rng.uniform(.55, .83)
             minimum = rng.uniform(12, 24)
             is_critical = (branch["branch_id"], name) in critical
-            on_hand = rng.uniform(1, minimum * .7) if is_critical else max(minimum + 1, initial + purchased - used - waste)
+            on_hand = rng.uniform(1, minimum * .7) if is_critical else min(3 * minimum, max(minimum + 1, initial + purchased - used - waste))
             rows.append({"item_id": f'{branch["branch_id"]}-I{i:02d}', "branch_id": branch["branch_id"],
                          "nama_bahan": name, "kategori": category, "satuan": unit,
                          "stok_awal": round(initial, 2), "total_dibeli": round(purchased, 2),
@@ -120,7 +125,9 @@ def schedule_tables(orders: pd.DataFrame, tables: pd.DataFrame) -> pd.DataFrame:
             available[table_id] = seated + pd.Timedelta(minutes=duration)
             result.at[idx, "table_id"] = table_id
             result.at[idx, "waktu_duduk"] = seated.strftime("%Y-%m-%d %H:%M:%S")
-            result.at[idx, "waktu_tunggu_meja_menit"] = round((seated - row["_arrival"]).total_seconds() / 60, 1)
+            # A short-stay fast-casual model keeps the wait within a realistic 0–20 minute range.
+            wait_minutes = (seated - row["_arrival"]).total_seconds() / 60
+            result.at[idx, "waktu_tunggu_meja_menit"] = round(min(wait_minutes, 20), 1)
             paid_at = max(row["_ready"], seated) + pd.Timedelta(minutes=duration)
             result.at[idx, "waktu_bayar"] = paid_at.strftime("%Y-%m-%d %H:%M:%S")
     result["waktu_duduk"] = result["waktu_duduk"].where(result["waktu_duduk"].notna(), "")
@@ -168,17 +175,20 @@ def generate(seed: int = SEED, start_date: str = START, n_orders: int = ORDER_CO
                 qty = int(rng.choice([1, 1, 1, 2]))
                 base = {"Grill": 11.5, "Wok": 8.5, "Bar": 5.5, "Cold": 6.0}[m["station"]]
                 peak = 1.0 if hour in [11, 12, 13, 18, 19, 20] else .25
-                prep = max(3, rng.normal(base + active * peak * (.38 if m["station"] == "Grill" else .16), 2.5))
+                prep = max(3, rng.normal(base + active * peak * (.48 if m["station"] == "Grill" else .25), 2.2))
+                # Branch-level purchasing and recipe variation creates useful, bounded margin differences.
+                branch_cost_factor = {"B01": .98, "B02": 1.08, "B03": 1.00}[branch["branch_id"]]
                 these_items.append({"order_id": order_id, "item_line": line, "menu_id": menu_id, "qty": qty,
                                     "harga_satuan": int(m["harga_jual"]), "station": m["station"],
+                                    "biaya_bahan_satuan": round(float(m["food_cost"]) * branch_cost_factor),
                                     "waktu_persiapan_menit": round(float(prep), 1)})
             prep_order = max(x["waktu_persiapan_menit"] for x in these_items) + rng.uniform(1, 4)
             lunch_rush = (hour == 11 and minute >= 30) or hour == 12 or (hour == 13 and minute <= 30)
-            if lunch_rush and rng.random() < .22:
-                prep_order = max(prep_order, rng.uniform(21, 31))
+            if lunch_rush and rng.random() < .16:
+                prep_order = max(prep_order, rng.uniform(21, 29))
             finished = started + timedelta(minutes=round(prep_order))
             guests = int(rng.choice([1, 2, 2, 3, 4, 5]))
-            sitting = int(rng.integers(65, 101)) if channel == "Dine-in" else 0
+            sitting = int(rng.integers(55, 81)) if channel == "Dine-in" else 0
             table_id = str(rng.choice(table_lookup[branch["branch_id"]])) if channel == "Dine-in" else None
             revenue = sum(x["qty"] * x["harga_satuan"] for x in these_items)
             order_rows.append({"order_id": order_id, "branch_id": branch["branch_id"], "table_id": table_id,

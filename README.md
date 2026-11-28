@@ -90,7 +90,7 @@ pip install -r requirements.txt
 | `inventory.csv` | 15 bahan per cabang (45 baris), stok, pembelian, pemakaian, waste dan stockout; PK `item_id` |
 | `feedback.csv` | sekitar 400 rating/komentar yang terhubung ke order; PK `feedback_id` |
 
-Beberapa kolom tambahan mendukung pertanyaan bisnis pada acuan: `pesanan_aktif`, `waktu_duduk`, dan `waktu_tunggu_meja_menit` pada orders; `item_line` pada order_items; serta `stok_awal`, `total_dipakai`, dan `stockout_events_14d` pada inventory. Meja dine-in dijadwalkan agar satu meja tidak digunakan bersamaan. Durasi persiapan order didefinisikan sebagai `waktu_selesai - waktu_masuk`; durasi item tersedia terpisah pada order_items.
+Beberapa kolom tambahan mendukung pertanyaan bisnis pada acuan: `pesanan_aktif`, `waktu_duduk`, dan `waktu_tunggu_meja_menit` pada orders; `item_line` serta biaya bahan per item/cabang (`biaya_bahan_satuan`) pada order_items; serta `stok_awal`, `total_dipakai`, dan `stockout_events_14d` pada inventory. Meja dine-in dijadwalkan agar satu meja tidak digunakan bersamaan. Durasi persiapan order didefinisikan sebagai `waktu_selesai - waktu_masuk`; durasi item tersedia terpisah pada order_items. Waktu tunggu sintetis dibatasi 20 menit dan okupansi efektif per jam dibatasi 95%; margin cabang memakai biaya bahan per item yang berbeda menurut cabang.
 
 ## Perlakuan cleaning
 

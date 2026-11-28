@@ -111,7 +111,10 @@ def clean_all() -> dict[str, pd.DataFrame]:
     orphan_items = ~items["order_id"].isin(orders["order_id"])
     removed_orphans = int(orphan_items.sum())
     items = items.loc[~orphan_items].copy()
-    for col in ["qty", "harga_satuan", "waktu_persiapan_menit"]:
+    item_numeric = ["qty", "harga_satuan", "waktu_persiapan_menit"]
+    if "biaya_bahan_satuan" in items:
+        item_numeric.append("biaya_bahan_satuan")
+    for col in item_numeric:
         items[col] = pd.to_numeric(items[col], errors="coerce")
     invalid_prep = items["waktu_persiapan_menit"].isna() | ~items["waktu_persiapan_menit"].between(0, 120)
     invalid_count = int(invalid_prep.sum())
@@ -121,6 +124,8 @@ def clean_all() -> dict[str, pd.DataFrame]:
     items.loc[invalid_prep, "waktu_persiapan_menit"] = station_median.loc[invalid_prep]
     items["qty"] = items["qty"].fillna(1).clip(lower=1).round().astype("int64")
     items["harga_satuan"] = items["harga_satuan"].fillna(0).round().astype("int64")
+    if "biaya_bahan_satuan" in items:
+        items["biaya_bahan_satuan"] = items["biaya_bahan_satuan"].fillna(0).clip(lower=0).round().astype("int64")
     items["waktu_persiapan_menit"] = items["waktu_persiapan_menit"].round(1)
     logs.append(log_record("order_items", before, items, duplicates=duplicate_items,
                            removed=removed_orphans, imputed=invalid_count, corrected=invalid_count))

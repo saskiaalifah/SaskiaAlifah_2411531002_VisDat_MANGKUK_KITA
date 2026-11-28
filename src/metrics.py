@@ -28,7 +28,8 @@ def main() -> None:
     orders["waktu_duduk"] = pd.to_datetime(orders["waktu_duduk"], errors="coerce")
     items = items.merge(menu[["menu_id", "nama_menu", "kategori", "food_cost"]], on="menu_id", how="left", validate="many_to_one")
     items["revenue_item"] = items["qty"] * items["harga_satuan"]
-    items["food_cost_total"] = items["qty"] * items["food_cost"]
+    item_cost = items["biaya_bahan_satuan"].fillna(items["food_cost"]) if "biaya_bahan_satuan" in items else items["food_cost"]
+    items["food_cost_total"] = items["qty"] * item_cost
     items["profit_item"] = items["revenue_item"] - items["food_cost_total"]
     menu_metrics = items.groupby(["menu_id", "nama_menu", "kategori"], as_index=False).agg(
         units_sold=("qty", "sum"), revenue=("revenue_item", "sum"),
@@ -71,7 +72,7 @@ def main() -> None:
                 occupancy_rows.append({"tanggal": day, "branch_id": branch_id, "hour": hour,
                                        "occupied_table_minutes": round(minutes, 2),
                                        "available_table_minutes": denominator,
-                                       "occupancy_rate_pct": round(minutes / denominator * 100, 2)})
+                                       "occupancy_rate_pct": round(min(minutes / denominator * 100, 95), 2)})
     occupancy = pd.DataFrame(occupancy_rows)
     occupancy.to_csv(REPORTS / "occupancy_hourly.csv", index=False, encoding="utf-8-sig")
 
@@ -94,13 +95,13 @@ def main() -> None:
         "food_waste_value_idr": round(float(inventory["waste_value"].sum()), 2),
         "definitions": {
             "delayed_order": "durasi_persiapan_menit > 20 menit",
-            "occupancy": "meja-menit terisi / meja-menit tersedia; jam operasional 08.00–22.00",
+            "occupancy": "meja-menit terisi / meja-menit tersedia; jam operasional 08.00–22.00; nilai per jam dibatasi 95% untuk mensimulasikan utilisasi efektif",
             "food_cost_margin": "(revenue - food cost menu) / revenue; belum memasukkan biaya tenaga kerja/sewa/overhead",
             "food_waste": "nilai bahan terbuang / nilai total pembelian bahan",
         },
         "data_limitations": [
             "Seluruh order, jadwal duduk, rating, dan komentar adalah simulasi sintetis, bukan pengukuran cabang nyata.",
-            "Okupansi dihitung dari menit meja yang dijadwalkan; 100% menandakan meja penuh. Waktu tunggu meja disimpan terpisah untuk menunjukkan permintaan yang melebihi ketersediaan langsung.",
+            "Okupansi per jam dibatasi maksimal 95% sebagai utilisasi efektif agar lonjakan sintetis tidak mengesankan seluruh meja selalu penuh. Waktu tunggu meja disimulasikan terpisah dengan batas 20 menit.",
         ],
     }
     (REPORTS / "kpi_snapshot.json").write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
